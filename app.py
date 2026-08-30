@@ -8,26 +8,29 @@ st.set_page_config(page_title="Day-by-Day Pickup Report", layout="wide")
 st.title("📅 Day-by-Day (DD) Pickup Grid")
 
 # ------------------------------------------------------------------------------
-# 1. SIDEBAR UPLOADERS
+# 1. SIDEBAR UPLOADERS (SEPARATE FILES)
 # ------------------------------------------------------------------------------
 with st.sidebar:
     st.header("Upload Raw Data")
+    extract_file = st.file_uploader(
+        "1. IDeaS Data Extraction File", type=["csv", "xlsx"]
+    )
     pcdc_file = st.file_uploader(
-        "1. IDeaS PCDC / Data Extraction", type=["csv", "xlsx"]
+        "2. IDeaS PCDC Business Type File", type=["csv", "xlsx"]
     )
-    lh_file = st.file_uploader("2. Lighthouse Comp Set", type=["csv", "xlsx"])
-    synxis_file = st.file_uploader("3. SynXis Rate Plan", type=["csv", "xlsx"])
+    lh_file = st.file_uploader("3. Lighthouse Comp Set File", type=["csv", "xlsx"])
+    synxis_file = st.file_uploader("4. SynXis Rate Plan File", type=["csv", "xlsx"])
     prior_file = st.file_uploader(
-        "4. Yesterday's Report", type=["xlsx", "xlsm", "xls"]
+        "5. Yesterday's Pickup Report", type=["xlsx", "xlsm", "xls"]
     )
 
 
-def load_file_sheets(file_obj):
+def read_uploaded_file(file_obj):
     if file_obj is None:
         return None
     if file_obj.name.endswith(".csv"):
-        return {"Data Extraction": pd.read_csv(file_obj)}
-    return pd.read_excel(file_obj, sheet_name=None)
+        return pd.read_csv(file_obj)
+    return pd.read_excel(file_obj)
 
 
 # ------------------------------------------------------------------------------
@@ -83,34 +86,42 @@ columns = pd.MultiIndex.from_tuples(
 # ------------------------------------------------------------------------------
 # 3. DATA PROCESSING & MERGING ENGINE
 # ------------------------------------------------------------------------------
-sheets_dict = load_file_sheets(pcdc_file)
+df_extract = read_uploaded_file(extract_file)
+df_pcdc_biz = read_uploaded_file(pcdc_file)
 
-if sheets_dict is None:
+if df_extract is None or df_pcdc_biz is None:
     st.info(
-        "👈 Upload your IDeaS export file in the sidebar to populate the Day-by-Day grid."
+        "👈 Upload both **1. IDeaS Data Extraction** and **2. IDeaS PCDC Business Type** in the sidebar to build the grid."
     )
     st.dataframe(pd.DataFrame(columns=columns), use_container_width=True)
 else:
-    # Identify key sheets (fallback to first available sheet if names differ)
-    sheet_names = list(sheets_dict.keys())
-    df_extract = sheets_dict.get(
-        "Data Extraction", sheets_dict.get(sheet_names[0])
-    )
-    df_pcdc_biz = sheets_dict.get(
-        "PCDC Business Type", sheets_dict.get(sheet_names[0])
-    )
-
-    # Clean date column names
+    # Identify date column in Data Extraction
     date_col_extract = next(
         (c for c in df_extract.columns if "Date" in str(c)), df_extract.columns[0]
     )
     df_extract["Date_Clean"] = pd.to_datetime(df_extract[date_col_extract])
 
-    # 1. Date Range Generation (Start Date -> Dec 31 Current Year)
+    # Identify date column in PCDC
+    date_col_pcdc = next(
+        (c for c in df_pcdc_biz.columns if "Date" in str(c)),
+        df_pcdc_biz.columns[0],
+    )
+    df_pcdc_biz["Date_Clean"] = pd.to_datetime(df_pcdc_biz[date_col_pcdc])
+
+    # Generate continuous date range: Start date from import -> Dec 31 current year
     start_date = df_extract["Date_Clean"].min()
     current_year = pd.Timestamp.now().year
     end_date = pd.Timestamp(year=current_year, month=12, day=31)
     date_range = pd.date_range(start=start_date, end=end_date, freq="D")
+
+    # Merge individual files to master date sequence
+    base_df = pd.DataFrame({"Date_Clean": date_range})
+    merged_extract = pd.merge(
+        base_df, df_extract, on="Date_Clean", how="left"
+    )
+    merged_pcdc = pd.merge(
+        base_df, df_pcdc_biz, on="Date_Clean", how="left"
+    )
 
     # Initialize master grid output
     df_dd = pd.DataFrame(index=range(len(date_range)), columns=columns)
@@ -121,57 +132,37 @@ else:
     df_dd[("Date Info", "DOW")] = date_range.strftime("%a")
     df_dd[("Date Info", "Days Left")] = (date_range - today).days
 
-    # Merge Raw Data by Date
-    base_df = pd.DataFrame({"Date_Clean": date_range})
-    merged_extract = pd.merge(
-        base_df, df_extract, on="Date_Clean", how="left"
-    )
-
-    if date_col_extract in df_pcdc_biz.columns:
-        df_pcdc_biz["Date_Clean"] = pd.to_datetime(df_pcdc_biz[date_col_extract])
-        merged_pcdc = pd.merge(
-            base_df, df_pcdc_biz, on="Date_Clean", how="left"
-        )
-    else:
-        merged_pcdc = merged_extract
-
-    # Safe extraction helpers by column position (0-indexed)
+    # Helper function for positional index retrieval
     def get_col(df, idx):
         if idx < len(df.columns):
             return pd.to_numeric(df.iloc[:, idx], errors="coerce").fillna(0)
         return pd.Series(0, index=df.index)
 
     # --- PCDC BUSINESS TYPE LOOKUPS ---
-    # Col 4 (D): Total Transient Current | Col 5 (E): Total Transient Change
-    trans_current = get_col(merged_pcdc, 3)
-    trans_change = get_col(merged_pcdc, 4)
+    trans_current = get_col(merged_pcdc, 3)  # Col 4
+    trans_change = get_col(merged_pcdc, 4)  # Col 5
+    group_current = get_col(merged_pcdc, 5)  # Col 6
+    group_change = get_col(merged_pcdc, 6)  # Col 7
+    group_blocked = get_col(merged_pcdc, 7)  # Col 8
+    group_pu = get_col(merged_pcdc, 9)  # Col 10
 
-    # Col 6 (F): Total Group Current | Col 7 (G): Total Group Change
-    group_current = get_col(merged_pcdc, 5)
-    group_change = get_col(merged_pcdc, 6)
+    # ADR Numerator/Denominator columns from PCDC
+    trans_rn = get_col(merged_pcdc, 10)  # Col 11
+    group_rn = get_col(merged_pcdc, 12)  # Col 13
+    trans_rev = get_col(merged_pcdc, 18)  # Col 19
+    group_rev = get_col(merged_pcdc, 20)  # Col 21
 
-    # Col 8 (H): Group Blocked | Col 10 (J): Group P/U
-    group_blocked = get_col(merged_pcdc, 7)
-    group_pu = get_col(merged_pcdc, 9)
+    # --- DATA EXTRACTION LOOKUPS ---
+    tot_otb_stly = get_col(merged_extract, 5)  # Col 6
+    grp_otb_stly = get_col(merged_extract, 7)  # Col 8
+    trans_otb_stly = get_col(merged_extract, 9)  # Col 10
 
-    # --- DATA EXTRACTION STLY LOOKUPS ---
-    # Col 6 of Extract: Total OTB STLY | Col 8: Group OTB STLY | Col 10: Transient OTB STLY
-    tot_otb_stly = get_col(merged_extract, 5)
-    grp_otb_stly = get_col(merged_extract, 7)
-    trans_otb_stly = get_col(merged_extract, 9)
-
-    # --- ADR LOOKUPS (Cols 19, 21 Numerator / Cols 11, 13 Denominator) ---
-    trans_rev = get_col(merged_pcdc, 18)
-    group_rev = get_col(merged_pcdc, 20)
-    trans_rn = get_col(merged_pcdc, 10)
-    group_rn = get_col(merged_pcdc, 12)
-
-    # --- CALCULATE & POPULATE GRID COLUMNS ---
-    # Rooms Sold - Total Transient
+    # --- POPULATE GRID ---
+    # Transient
     df_dd[("Rooms Sold - Total Transient", "Current")] = trans_current
     df_dd[("Rooms Sold - Total Transient", "Change")] = trans_change
 
-    # Rooms Sold - Total Group
+    # Group
     df_dd[("Rooms Sold - Total Group", "Current")] = group_current
     df_dd[("Rooms Sold - Total Group", "Change")] = group_change
     df_dd[("Rooms Sold - Total Group", "Blocked")] = group_blocked
@@ -180,7 +171,7 @@ else:
         group_blocked - group_pu
     ).clip(lower=0)
 
-    # Rooms Sold - Total Hotel (= Transient + Group)
+    # Total Hotel (= Transient + Group)
     df_dd[("Rooms Sold - Total Hotel", "Current")] = (
         trans_current + group_current
     )
@@ -202,7 +193,7 @@ else:
         group_current - grp_otb_stly
     )
 
-    # Yield Metrics - Estimated ADR = (Trans Rev + Group Rev) / (Trans RN + Group RN)
+    # Estimated ADR
     total_rev = trans_rev + group_rev
     total_rn = trans_rn + group_rn
     df_dd[("Yield Metrics", "Estimated ADR")] = np.where(
