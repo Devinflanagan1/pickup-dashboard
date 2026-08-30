@@ -65,14 +65,18 @@ def parse_lighthouse_rate_shop(lh_file):
                 header_row_idx = i
                 break
 
-        df_clean = pd.read_excel(lh_file, sheet_name=sheet_name, header=header_row_idx)
+        df_clean = pd.read_excel(
+            lh_file, sheet_name=sheet_name, header=header_row_idx
+        )
         df_clean.columns = df_clean.columns.astype(str).str.strip()
 
         date_col = next((c for c in df_clean.columns if "Date" in c), None)
         if not date_col:
             continue
 
-        df_clean["Occupancy Date"] = pd.to_datetime(df_clean[date_col], errors="coerce")
+        df_clean["Occupancy Date"] = pd.to_datetime(
+            df_clean[date_col], errors="coerce"
+        )
         df_clean = df_clean.dropna(subset=["Occupancy Date"])
 
         parsed_df = pd.DataFrame({"Occupancy Date": df_clean["Occupancy Date"]})
@@ -81,7 +85,12 @@ def parse_lighthouse_rate_shop(lh_file):
             found_col = None
             for term in search_terms:
                 found_col = next(
-                    (c for c in df_clean.columns if term.lower() in c.lower()), None
+                    (
+                        c
+                        for c in df_clean.columns
+                        if term.lower() in c.lower()
+                    ),
+                    None,
                 )
                 if found_col:
                     break
@@ -94,7 +103,7 @@ def parse_lighthouse_rate_shop(lh_file):
                 parsed_df[alias] = 0.0
 
         comp_cols = list(comp_map.keys())
-        parsed_df["Comp Set Avg"] = parsed_df[comp_cols].mean(axis=1)
+        parsed_df["Comp Set Avg"] = parsed_df[comp_cols].mean(axis=1).round(2)
         tabs_data[view_label] = parsed_df
 
     return tabs_data
@@ -112,7 +121,7 @@ def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
     else:
         df_raw = pd.read_csv(synxis_file)
 
-    df_raw.columns = df_raw.columns.str.strip()
+    df_raw.columns = df_raw.columns.astype(str).str.strip()
 
     status_col = next(
         (c for c in df_raw.columns if "Rez_Status" in c or "Status" in c),
@@ -213,7 +222,29 @@ def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
 
 
 # =============================================================================
-# 3. BASE 2026 GRID GENERATOR
+# 3. IDEAS PCDC & DATA EXTRACTION PARSER
+# =============================================================================
+def parse_ideas_pcdc(pcdc_file):
+    if pcdc_file is None:
+        return pd.DataFrame()
+
+    if pcdc_file.name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(pcdc_file)
+    else:
+        df = pd.read_csv(pcdc_file)
+
+    df.columns = df.columns.astype(str).str.strip()
+    date_col = next((c for c in df.columns if "Date" in c), None)
+
+    if date_col:
+        df["Occupancy Date"] = pd.to_datetime(df[date_col], errors="coerce")
+        return df.dropna(subset=["Occupancy Date"])
+
+    return pd.DataFrame()
+
+
+# =============================================================================
+# 4. BASE 2026 GRID GENERATOR
 # =============================================================================
 def build_2026_base_grid():
     dates = pd.date_range(start="2026-01-01", end="2026-12-31", freq="D")
@@ -221,7 +252,8 @@ def build_2026_base_grid():
     base_df["DOW"] = base_df["Occupancy Date"].dt.strftime("%a")
     base_df["Date"] = base_df["Occupancy Date"].dt.strftime("%Y-%m-%d")
 
-    today = pd.to_datetime("2026-01-01")
+    # Dynamic anchor to current date or standard start date
+    today = pd.Timestamp.now().normalize()
     base_df["Days Left"] = (base_df["Occupancy Date"] - today).dt.days
     base_df["Events"] = ""
 
@@ -229,7 +261,7 @@ def build_2026_base_grid():
 
 
 # =============================================================================
-# 4. STREAMLIT APP ENGINE
+# 5. STREAMLIT APP ENGINE
 # =============================================================================
 def main():
     st.title("🏨 2026 Master Revenue Management System")
@@ -325,7 +357,7 @@ def main():
         base_df["Rate_Plan_Rev"] = 0.0
         base_df["Rate_Plan_ADR"] = 0.0
 
-    # Initialize placeholder metrics matching header structure
+    # Initialize placeholder metrics
     metric_cols = [
         "Rem_Demand_Total",
         "Rem_Demand_Trans",
@@ -367,11 +399,17 @@ def main():
     base_df["Sold_Total_Current"] = base_df["Rate_Plan_Rooms"]
     base_df["Booked_ADR_Total"] = base_df["Rate_Plan_ADR"]
 
+    # Optional IDeaS Integration Hook
+    df_pcdc = parse_ideas_pcdc(pcdc_file)
+    if not df_pcdc.empty:
+        # Merge logic for PCDC data into base_df can be expanded here
+        pass
+
     # =========================================================================
     # TAB 1: MAIN DASHBOARD GRID
     # =========================================================================
     with tab_dashboard:
-        # Construct MultiIndex Columns matching image_c84646.png
+        # Corrected MultiIndex Columns Structure with Unique Tuples
         columns_tuple = [
             ("", "", "DOW"),
             ("", "", "Date"),
@@ -416,12 +454,12 @@ def main():
             ("Rooms Sold", "Total Group", "Blocked"),
             ("Rooms Sold", "Total Group", "P/U"),
             ("Rooms Sold", "Total Group", "Remaining"),
-            ("Rooms OTB STLY", "Total OTB STLY", ""),
-            ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
-            ("Rooms OTB STLY", "Transient OTB STLY", ""),
-            ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
-            ("Rooms OTB STLY", "Group OTB STLY", ""),
-            ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
+            ("Rooms OTB STLY", "Total Hotel", "OTB STLY"),
+            ("Rooms OTB STLY", "Total Hotel", "Variance (TY - STLY)"),
+            ("Rooms OTB STLY", "Transient", "OTB STLY"),
+            ("Rooms OTB STLY", "Transient", "Variance (TY - STLY)"),
+            ("Rooms OTB STLY", "Group", "OTB STLY"),
+            ("Rooms OTB STLY", "Group", "Variance (TY - STLY)"),
         ]
 
         multi_index_cols = pd.MultiIndex.from_tuples(columns_tuple)
@@ -536,24 +574,25 @@ def main():
             "Sold_Group_Remaining"
         ]
 
-        dash_df[("Rooms OTB STLY", "Total OTB STLY", "")] = base_df[
+        # Corrected Mapping for Rooms OTB STLY
+        dash_df[("Rooms OTB STLY", "Total Hotel", "OTB STLY")] = base_df[
             "OTB_STLY_Total"
         ]
-        dash_df[("Rooms OTB STLY", "Variance (TY - STLY)", "")] = base_df[
-            "Variance_Total_STLY"
-        ]
-        dash_df[("Rooms OTB STLY", "Transient OTB STLY", "")] = base_df[
+        dash_df[
+            ("Rooms OTB STLY", "Total Hotel", "Variance (TY - STLY)")
+        ] = base_df["Variance_Total_STLY"]
+        dash_df[("Rooms OTB STLY", "Transient", "OTB STLY")] = base_df[
             "OTB_STLY_Trans"
         ]
-        dash_df[("Rooms OTB STLY", "Variance (TY - STLY)", "")] = base_df[
-            "Variance_Trans_STLY"
-        ]
-        dash_df[("Rooms OTB STLY", "Group OTB STLY", "")] = base_df[
+        dash_df[
+            ("Rooms OTB STLY", "Transient", "Variance (TY - STLY)")
+        ] = base_df["Variance_Trans_STLY"]
+        dash_df[("Rooms OTB STLY", "Group", "OTB STLY")] = base_df[
             "OTB_STLY_Group"
         ]
-        dash_df[("Rooms OTB STLY", "Variance (TY - STLY)", "")] = base_df[
-            "Variance_Group_STLY"
-        ]
+        dash_df[
+            ("Rooms OTB STLY", "Group", "Variance (TY - STLY)")
+        ] = base_df["Variance_Group_STLY"]
 
         st.subheader("2026 Day-by-Day Master Grid")
         st.dataframe(dash_df, use_container_width=True, height=650)
@@ -573,7 +612,6 @@ def main():
                 "No records found matching the selected status filter."
             )
         else:
-            # Summary Metrics for Rate Plan Tab
             rp_col1, rp_col2, rp_col3 = st.columns(3)
             total_rp_rooms = df_synxis_exploded["Room_Qty"].sum()
             total_rp_rev = df_synxis_exploded["Daily_Revenue"].sum()
@@ -587,7 +625,6 @@ def main():
 
             st.markdown("---")
 
-            # Breakdown by Rate Code / Category
             st.write("### 📊 Production by Rate Code")
             rate_code_summary = (
                 df_synxis_exploded.groupby(["Rate_Code", "Rate_Type"])
@@ -612,7 +649,6 @@ def main():
                 use_container_width=True,
             )
 
-            # Daily Stay Night Production Table
             st.write("### 📅 Daily Production Breakdown")
             st.dataframe(
                 df_synxis_daily.style.format(
