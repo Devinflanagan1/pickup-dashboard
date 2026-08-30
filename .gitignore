@@ -1,0 +1,10 @@
+# Never commit hotel data exports 
+*.xlsx 
+*.xls 
+*.csv 
+# Python noise 
+__pycache__/ 
+*.pyc 
+.venv/ 
+venv/ 
+.DS_Store
