@@ -255,9 +255,12 @@ def build_report(parts, as_of, comp_method="Average", show_change="None"):
                       ("Motto By Hilton Bentonville Downtown",    "c_motto"),
                       ("AC Hotel by Marriott Bentonville",        "c_ac"),
                       ("DoubleTree Suites by Hilton Bentonville", "c_dt")]:
-        r[name + " | Current"] = df.get(key)
-        if add_chg:
-            r[name + " | Change"] = df.get(key + "_chg")
+        base = "Competitor Shops | " + name           # group under one band, like the original
+        if add_chg:                                   # pair Current + Change under the hotel
+            r[base + " | Current"] = df.get(key)
+            r[base + " | Change"]  = df.get(key + "_chg")
+        else:                                         # single clean header, no sub-row
+            r[base] = df.get(key)
 
     r["OOO"]   = dnum("Rooms N/A - Out of Order This Year")
     r["Ovrbk"] = dnum("Overbooking This Year")
@@ -276,12 +279,14 @@ def build_report(parts, as_of, comp_method="Average", show_change="None"):
     r["Rooms Sold | Total Group | Remaining"]   = df.get("grp_avail")
 
     # ---- Rooms OTB STLY + Variance (from Data Extract) ---- #
-    r["OTB STLY | Total OTB STLY"]           = occ_stly
-    r["OTB STLY | Variance (TY - STLY)"]     = occ_ty - occ_stly
-    r["OTB STLY | Transient OTB STLY"]       = tr_stly
-    r["OTB STLY | Transient Variance"]       = tr_ty - tr_stly
-    r["OTB STLY | Group OTB STLY"]           = gr_stly
-    r["OTB STLY | Group Variance"]           = gr_ty - gr_stly
+    # Grouped like Rooms Sold: each of Total Hotel / Transient / Group has
+    # a Current (STLY on-books) and a Change (Variance = TY − STLY).
+    r["Rooms OTB STLY | Total Hotel | Current"]     = occ_stly
+    r["Rooms OTB STLY | Total Hotel | Change"]      = occ_ty - occ_stly
+    r["Rooms OTB STLY | Total Transient | Current"] = tr_stly
+    r["Rooms OTB STLY | Total Transient | Change"]  = tr_ty - tr_stly
+    r["Rooms OTB STLY | Total Group | Current"]     = gr_stly
+    r["Rooms OTB STLY | Total Group | Change"]      = gr_ty - gr_stly
 
     # ---- Remaining Demand (unconstrained demand still to materialise) ---- #
     r["Remaining Demand | Total Hotel"]  = (dem_tot - occ_ty).clip(lower=0)
@@ -316,71 +321,130 @@ def build_report(parts, as_of, comp_method="Average", show_change="None"):
 
 
 # ----------------------------------------------------------------------------- #
-#  Excel export (grouped multi-level header, matching the report layout)
+#  Column-name → 3-level header tuple
+# ----------------------------------------------------------------------------- #
+def _levels(col):
+    """
+    Turn a column name into a (Level1, Level2, Level3) tuple.
+      'a | b | c' -> ('a', 'b', 'c')          full 3-tier
+      'a | b'     -> ('a', 'b', '')           b merges down into row 3
+      'a'         -> ('a', '', '')            a merges down across rows 2-3
+    """
+    parts = [p.strip() for p in str(col).split("|")]
+    while len(parts) < 3:
+        parts.append("")
+    return tuple(parts[:3])
+
+
+# ----------------------------------------------------------------------------- #
+#  Excel export (true 3-tier grouped header + OTB heat map)
 # ----------------------------------------------------------------------------- #
 def to_excel(r):
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.formatting.rule import ColorScaleRule
 
-    top, sub = [], []
-    for col in r.columns:
-        if "|" in col:
-            parts = [p.strip() for p in col.split("|")]
-            top.append(parts[0]); sub.append(" ".join(parts[1:]))
-        else:
-            top.append(""); sub.append(col)
+    lv = [_levels(c) for c in r.columns]           # list of (l1,l2,l3)
+    n = len(lv)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Pick-Up Report"
 
-    hdr_fill = PatternFill("solid", fgColor="1F3864")
-    grp_fills = ["2E75B6", "548235", "BF8F00", "7030A0", "C55A11"]
+    # ---- exact palette sampled from the original report ---- #
+    NAVY, TEAL, ORANGE, PURPLE, GREEN = "16365C", "215967", "E26B0A", "60497A", "76933C"
     white = Font(color="FFFFFF", bold=True, size=9)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     thin = Border(*(Side(style="thin", color="D9D9D9"),) * 4)
 
-    # ---- header row 1 (group) with merges ---- #
-    c = 1
-    group_color = {}
-    ci = 0
-    while c <= len(top):
-        g = top[c - 1]
-        span = 1
-        while c + span <= len(top) and top[c + span - 1] == g and g != "":
-            span += 1
-        cell = ws.cell(row=1, column=c, value=g if g else sub[c - 1])
-        cell.font = white; cell.alignment = center
-        if g == "":
-            cell.fill = hdr_fill
-            ws.merge_cells(start_row=1, start_column=c, end_row=2, end_column=c)
-        else:
-            if g not in group_color:
-                group_color[g] = grp_fills[ci % len(grp_fills)]; ci += 1
-            cell.fill = PatternFill("solid", fgColor=group_color[g])
-            if span > 1:
-                ws.merge_cells(start_row=1, start_column=c, end_row=1, end_column=c + span - 1)
-        c += span
+    def PF(hexcol):
+        return PatternFill("solid", fgColor=hexcol)
 
-    # ---- header row 2 (sub) for grouped cols ---- #
-    for j, (g, s) in enumerate(zip(top, sub), start=1):
-        if g != "":
-            cell = ws.cell(row=2, column=j, value=s)
+    def seg_color(txt):
+        """Orange/Purple/Green by Total Hotel / Transient / Group; else None."""
+        if "Total Hotel" in txt:     return ORANGE
+        if "Total Transient" in txt: return PURPLE
+        if "Total Group" in txt:     return GREEN
+        return None
+
+    def band_fill(l1, l2):
+        """Row-1 fill: navy for single cols, teal for a group band."""
+        return PF(NAVY) if l2 == "" else PF(TEAL)
+
+    def lvl2_fill(l1, l2):
+        """Row-2 fill: Total colour if applicable, navy for competitor hotels, else teal."""
+        sc = seg_color(l2)
+        if sc:                       return PF(sc)
+        if l1 == "Competitor Shops": return PF(NAVY)   # hotel names sit on navy
+        return PF(TEAL)
+
+    def lvl3_fill(l1, l2):
+        """Row-3 fill inherits the Total colour of its l2, else navy."""
+        sc = seg_color(l2)
+        return PF(sc) if sc else PF(NAVY)
+
+    # ---- Level 1 (row 1): horizontal merge on equal adjacent l1 ---- #
+    j = 0
+    while j < n:
+        l1 = lv[j][0]
+        k = j
+        while k + 1 < n and lv[k + 1][0] == l1 and lv[j]# only span multi-col groups
+            k += 1
+        # single-field navy columns that we want tinted orange like the original
+        fill = band_fill(l1, lv[j][1])
+        if lv[j][1] == "" and l1 in ("Estimated ADR",):
+            fill = PF(ORANGE)
+        cell = ws.cell(row=1, column=j + 1, value=l1)
+        cell.font = white; cell.alignment = center; cell.fill = fill
+        if lv[j][1] == "":                       # single-field col -> merge down rows 1-3
+            ws.merge_cells(start_row=1, start_column=j + 1, end_row=3, end_column=j + 1)
+        elif k > j:
+            ws.merge_cells(start_row=1, start_column=j + 1, end_row=1, end_column=k + 1)
+        j = k + 1
+
+    # ---- Level 2 (row 2): horizontal merge on equal adjacent (l1,l2) ---- #
+    j = 0
+    while j < n:
+        l1, l2, l3 = lv[j]
+        if l2:
+            k = j
+            while k + 1 < n and lv[k + 1][0] == l1 and lv[k + 1][1] == l2:
+                k += 1
+            cell = ws.cell(row=2, column=j + 1, value=l2)
             cell.font = white; cell.alignment = center
-            cell.fill = PatternFill("solid", fgColor=group_color[g])
+            cell.fill = lvl2_fill(l1, l2)
+            if l3 == "":                         # no 3rd tier -> merge l2 down into row 3
+                ws.merge_cells(start_row=2, start_column=j + 1, end_row=3, end_column=j + 1)
+            elif k > j:
+                ws.merge_cells(start_row=2, start_column=j + 1, end_row=2, end_column=k + 1)
+            j = k + 1
+        else:
+            j += 1
 
-    # ---- data ---- #
+    # ---- Level 3 (row 3) ---- #
+    for j, (l1, l2, l3) in enumerate(lv, start=1):
+        if l3:
+            cell = ws.cell(row=3, column=j, value=l3)
+            cell.font = white; cell.alignment = center
+            cell.fill = lvl3_fill(l1, l2)
+
+    # ---- data (starts row 4) ---- #
     _hotelnames = ("Bentonville", "MGallery")
+    DATA0 = 4
     pct = {i for i, c0 in enumerate(r.columns) if c0.startswith("Occ Forecast %")}
-    # competitor CHANGE columns get a signed format, not $
     chg = {i for i, c0 in enumerate(r.columns)
            if any(h in c0 for h in _hotelnames) and c0.endswith("Change")}
     money = {i for i, c0 in enumerate(r.columns)
              if (c0 in ("BAR", "Comp Set Avg", "Last Room Value", "Estimated ADR")
                  or "ADR" in c0 or any(h in c0 for h in _hotelnames))
              and i not in chg}
-    for ri, (_, row) in enumerate(r.iterrows(), start=3):
+    otb_sold_col = None
+    for i, c0 in enumerate(r.columns):
+        if c0 == "Rooms Sold | Total Hotel | Current":
+            otb_sold_col = i
+
+    for ri, (_, row) in enumerate(r.iterrows(), start=DATA0):
         for ci2, col in enumerate(r.columns, start=1):
             v = row[col]
             cell = ws.cell(row=ri, column=ci2, value=(None if pd.isna(v) else v))
@@ -396,8 +460,18 @@ def to_excel(r):
             elif isinstance(v, float) and float(v).is_integer():
                 cell.number_format = "#,##0"
 
-    ws.freeze_panes = "C3"
-    for j in range(1, len(r.columns) + 1):
+    # ---- HEAT MAP on OTB rooms sold (Total Hotel Current) ---- #
+    if otb_sold_col is not None and len(r) > 0:
+        L = get_column_letter(otb_sold_col + 1)
+        rng = f"{L}{DATA0}:{L}{DATA0 + len(r) - 1}"
+        ws.conditional_formatting.add(
+            rng,
+            ColorScaleRule(start_type="min", start_color="F8696B",         # red (low)
+                           mid_type="percentile", mid_value=50, mid_color="FFEB84",  # yellow
+                           end_type="max", end_color="63BE7B"))            # green (high)
+
+    ws.freeze_panes = "C4"
+    for j in range(1, n + 1):
         ws.column_dimensions[get_column_letter(j)].width = 12
     ws.column_dimensions["A"].width = 10
     ws.column_dimensions["D"].width = 22
@@ -464,79 +538,11 @@ view = report.loc[mask].reset_index(drop=True)
 st.subheader(f"Pick-Up Report — {start:%b %d, %Y} → {end:%b %d, %Y}  ({len(view)} days)")
 
 # Formatting for on-screen display
-_hotels = ["21c Museum Hotel Bentonville - MGallery",
-           "Motto By Hilton Bentonville Downtown",
-           "AC Hotel by Marriott Bentonville",
-           "DoubleTree Suites by Hilton Bentonville"]
 pct_cols   = [c for c in view.columns if c.startswith("Occ Forecast %")]
-shop_cur   = [c for c in view.columns if any(c.startswith(h) for h in _hotels)
-              and c.endswith("Current")]
-shop_chg   = [c for c in view.columns if any(c.startswith(h) for h in _hotels)
-              and c.endswith("Change")]
+shop_all   = [c for c in view.columns if c.startswith("Competitor Shops")]
+shop_chg   = [c for c in shop_all if c.endswith("Change")]
+shop_cur   = [c for c in shop_all if c not in shop_chg]
 money_cols = (["BAR", "Comp Set Avg", "Last Room Value", "Estimated ADR"]
               + [c for c in view.columns if c.startswith("Booked ADR")])
-var_cols   = [c for c in view.columns if "Variance" in c] + shop_chg
-
-def _money(v):
-    """$ format for numbers, but pass through text like 'Sold out' / 'LOS3'."""
-    if isinstance(v, (int, float)) and not pd.isna(v):
-        return f"${v:,.0f}"
-    return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
-
-def _signed(v):
-    """+/- format for competitor change (blank if unchanged/missing)."""
-    if isinstance(v, (int, float)) and not pd.isna(v) and v != 0:
-        return f"{v:+,.0f}"
-    return ""
-
-fmt = {}
-for c in pct_cols:
-    fmt[c] = "{:.1%}"
-for c in money_cols:
-    fmt[c] = "${:,.0f}"
-for c in shop_cur:            # competitor shops may hold text -> use safe callable
-    fmt[c] = _money
-for c in shop_chg:
-    fmt[c] = _signed
-for c in view.columns:
-    if c in ("Days Left", "OOO", "Ovrbk") or c.startswith(("Rooms Sold", "OTB STLY",
-             "Remaining Demand", "Occ Forecast |")) and c not in pct_cols:
-        fmt.setdefault(c, "{:,.0f}")
-
-styler = (view.style
-          .format(fmt, na_rep="")
-          .map(lambda v: "color:#1a7f37" if isinstance(v, (int, float)) and v > 0
-               else ("color:#cf222e" if isinstance(v, (int, float)) and v < 0 else ""),
-               subset=var_cols))
-
-st.dataframe(styler, use_container_width=True, height=560)
-
-st.download_button(
-    "⬇️ Download report as Excel",
-    data=to_excel(view),
-    file_name=f"Compton_PickUp_{start:%Y%m%d}_{end:%Y%m%d}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-with st.expander("ℹ️ Where each column comes from"):
-    st.markdown("""
-| Report column | Source file | Field |
-|---|---|---|
-| DOW, Date | Data Extract | Day of Week, Occupancy Date |
-| Days Left | *computed* | Occupancy Date − as-of date |
-| Events | Data Extract → PCDC | Special Event |
-| Rooms Left to Sell | Data Extract | Remaining Capacity |
-| BAR | Data Extract | BAR |
-| Comp Set Avg | Rate Shop | Avg/Median of the 4 competitors |
-| Last Room Value | Data Extract | Last Room Value |
-| Competitor Shops (4) | Rate Shop | 21c / Motto / AC / DoubleTree rates |
-| OOO, Ovrbk | Data Extract | Rooms N/A – Out of Order, Overbooking |
-| Rooms Sold (Trans/Group/Blocked/PU/Remaining + Change) | PCDC | Occupancy On Books current & change |
-| Rooms OTB STLY + Variance | Data Extract | On-Books STLY vs This-Year |
-| Remaining Demand | Data Extract | User Demand − On-Books (floored at 0) |
-| Occupancy Forecast + % | PCDC / Data Extract | Forecast rooms ÷ Physical Capacity |
-| Booked ADR (Hotel/Trans/Group) | PCDC | ADR on books (Hotel = revenue ÷ rooms) |
-| Estimated ADR | Data Extract | ADR Forecast |
-
-*Market Segment* is used to validate the Transient vs Group split (it matches PCDC).
-""")
+# all "change / pickup / variance" columns get +/- red-green colouring
+rooms_chg  = [c for c in
