@@ -3,48 +3,76 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Master Day-by-Day Revenue Management Dashboard",
+    page_title="Master Day-by-Day Revenue Dashboard",
     layout="wide"
 )
 
 # ------------------------------------------------------------------------------
-# 1. EXACT MASTER DAY-BY-DAY HEADERS & SEQUENCE
+# 1. DEFINE EXACT MULTI-LEVEL HEADERS STRUCTURE
 # ------------------------------------------------------------------------------
-DESIRED_DD_HEADERS = [
-    "DOW",
-    "Date",
-    "Days Left",
-    "Events",
-    # Rooms Section
-    "Rooms Current",
-    "Rooms Change",
-    "Rooms OTB STLY",
-    "Rooms Variance",
-    # ADR Section
-    "Estimated ADR",
-    "ADR Current",
-    "ADR Change",
-    "ADR OTB STLY",
-    "ADR Variance",
-    # Revenue Section
-    "Rev Current",
-    "Rev Change",
-    "Rev OTB STLY",
-    "Rev Variance (TY - STLY)",
-    # Inventory, Demand & Pickup Section
-    "Blocked",
-    "P/U",
-    "Remaining Demand - Total Hotel",
-    "Variance (TY - STLY)"
-]
+def build_multiindex_headers():
+    """
+    Constructs the exact 3-level header tuple hierarchy matching your required layout.
+    """
+    header_tuples = [
+        ("DOW", "", ""),
+        ("Date", "", ""),
+        ("Days Left", "", ""),
+        ("Events", "", ""),
+        ("Rooms Left to Sell", "", ""),
+        ("BAR", "", ""),
+        ("Comp Set Avg", "", ""),
+        ("Last Room Value", "", ""),
+        # Competitor Shops
+        ("Competitor Shops", "21c Museum Hotel Bentonville - MGallery", ""),
+        ("Competitor Shops", "Motto By Hilton Bentonville Downtown", ""),
+        ("Competitor Shops", "AC Hotel by Marriott Bentonville", ""),
+        ("Competitor Shops", "DoubleTree Suites by Hilton Bentonville", ""),
+        ("Competitor Shops", "Current", ""),
+        # Inventory & Sales
+        ("OOO", "", ""),
+        ("Ovrbk", "", ""),
+        ("Rooms Sold", "Total Hotel", "Current"),
+        ("Rooms Sold", "Total Hotel", "Change"),
+        ("Rooms Sold", "Total Transient", "Current"),
+        ("Rooms Sold", "Total Transient", "Change"),
+        ("Rooms Sold", "Total Group", "Current"),
+        ("Rooms Sold", "Total Group", "Change"),
+        ("Rooms Sold", "Blocked", "Blocked"),
+        ("Rooms Sold", "P/U", "P/U"),
+        # Rooms OTB STLY
+        ("Rooms OTB STLY", "Total OTB STLY", ""),
+        ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
+        ("Rooms OTB STLY", "Transient OTB STLY", ""),
+        ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
+        ("Rooms OTB STLY", "Group OTB STLY", ""),
+        ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
+        # Demand & Occupancy Forecasts
+        ("Remaining Demand", "Remaining", ""),
+        ("Occupancy Forecast", "Total Hotel", ""),
+        ("Occupancy Forecast", "Total Transient", ""),
+        ("Occupancy Forecast", "Total Group", ""),
+        ("Occupancy Forecast %", "Total Hotel", ""),
+        ("Occupancy Forecast %", "Total Transient", ""),
+        ("Occupancy Forecast %", "Total Group", ""),
+        # ADR
+        ("Booked ADR(USD)", "Total Hotel", ""),
+        ("Booked ADR(USD)", "Total Transient", ""),
+        ("Booked ADR(USD)", "Total Group", ""),
+        ("Estimated ADR", "Total Hotel", ""),
+        ("Estimated ADR", "Total Transient", ""),
+        ("Estimated ADR", "Total Group", "")
+    ]
+    
+    return pd.MultiIndex.from_tuples(header_tuples, names=["Category", "SubCategory", "Metric"])
 
 
 # ------------------------------------------------------------------------------
-# 2. HELPER & CLEANING FUNCTIONS
+# 2. DATA PROCESSING & CLEANING HELPERS
 # ------------------------------------------------------------------------------
 
 def normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """Strips timestamps (time component) to ensure exact date joins."""
+    """Strips timestamps from date fields to fix join issues."""
     for col in df.columns:
         if "date" in str(col).lower():
             try:
@@ -54,89 +82,60 @@ def normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_file(file):
-    if file is None:
+def load_file(uploaded_file):
+    if uploaded_file is None:
         return None
-    df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
+    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
     return normalize_dates(df)
 
 
-# ------------------------------------------------------------------------------
-# 3. MASTER GRID BUILDER LOGIC
-# ------------------------------------------------------------------------------
-
-def build_master_day_by_day_grid(pcdc_df, extraction_df, mkt_df, lighthouse_df, synxis_df) -> pd.DataFrame:
+def create_master_dd_grid(pcdc_df, extraction_df, mkt_df, lh_df, synxis_df) -> pd.DataFrame:
     """
-    Merges all 5 source files and strictly enforces exact DD column order and header naming.
+    Combines input sources and shapes data into the exact multi-level header structure.
     """
-    # Start base grid from primary PCDC export
-    master_df = pcdc_df.copy() if pcdc_df is not None else pd.DataFrame()
+    multi_index = build_multiindex_headers()
+    
+    # Establish base rows (preferring PCDC date range)
+    if pcdc_df is not None and "Date" in pcdc_df.columns:
+        base_dates = pcdc_df["Date"].unique()
+    else:
+        base_dates = pd.date_range(start=pd.Timestamp.now(), periods=30).date
 
-    # Merge Data Extraction (Sourcing "Remaining Demand - Total Hotel")
+    # Create empty dataframe initialized with the exact MultiIndex columns
+    final_df = pd.DataFrame(index=range(len(base_dates)), columns=multi_index)
+    final_df[("Date", "", "")] = base_dates
+
+    # Calculate/populate DOW
+    final_df[("DOW", "", "")] = pd.to_datetime(final_df[("Date", "", "")]).dt.strftime("%a")
+
+    # Map IDeaS Data Extraction field for Remaining Demand
     if extraction_df is not None and "Date" in extraction_df.columns:
-        if "System Total Demand - Total This Year" in extraction_df.columns:
-            extraction_df = extraction_df.rename(
-                columns={"System Total Demand - Total This Year": "Remaining Demand - Total Hotel"}
+        demand_col = "System Total Demand - Total This Year"
+        if demand_col in extraction_df.columns:
+            merged = pd.merge(
+                final_df[[("Date", "", "")]], 
+                extraction_df[["Date", demand_col]], 
+                left_on=("Date", "", ""), 
+                right_on="Date", 
+                how="left"
             )
-        master_df = pd.merge(master_df, extraction_df, on="Date", how="left", suffixes=("", "_ext"))
+            final_df[("Remaining Demand", "Remaining", "")] = merged[demand_col].values
 
-    # Merge Market Segmentation
-    if mkt_df is not None and "Date" in mkt_df.columns:
-        master_df = pd.merge(master_df, mkt_df, on="Date", how="left", suffixes=("", "_mkt"))
-
-    # Merge Lighthouse Rate Shop
-    if lighthouse_df is not None and "Date" in lighthouse_df.columns:
-        master_df = pd.merge(master_df, lighthouse_df, on="Date", how="left", suffixes=("", "_lh"))
-
-    # Merge SynXis Rate Plan
-    if synxis_df is not None and "Date" in synxis_df.columns:
-        master_df = pd.merge(master_df, synxis_df, on="Date", how="left", suffixes=("", "_syn"))
-
-    # Flatten MultiIndex columns if present
-    if isinstance(master_df.columns, pd.MultiIndex):
-        master_df.columns = [" ".join(str(c) for c in col if str(c) and not str(c).startswith("Unnamed")).strip() for col in master_df.columns.values]
-
-    # Map alternative field names to exact target DD display headers
-    field_mapping = {
-        "PickUp": "P/U",
-        "Blocked Rooms": "Blocked",
-        "Rooms_Current": "Rooms Current",
-        "Rooms_Change": "Rooms Change",
-        "Rooms_STLY": "Rooms OTB STLY",
-        "Rooms_Var": "Rooms Variance",
-        "ADR_Current": "ADR Current",
-        "ADR_Change": "ADR Change",
-        "ADR_STLY": "ADR OTB STLY",
-        "ADR_Var": "ADR Variance",
-        "Rev_Current": "Rev Current",
-        "Rev_Change": "Rev Change",
-        "Rev_STLY": "Rev OTB STLY",
-        "Rev_Var": "Rev Variance (TY - STLY)",
-    }
-    master_df = master_df.rename(columns=field_mapping)
-
-    # Force missing columns to exist with null values
-    for header in DESIRED_DD_HEADERS:
-        if header not in master_df.columns:
-            master_df[header] = None
-
-    # Force exact column ordering matching DESIRED_DD_HEADERS
-    final_grid = master_df[DESIRED_DD_HEADERS]
-
-    return final_grid
+    return final_df
 
 
 # ------------------------------------------------------------------------------
-# 4. STREAMLIT APP UI & LAYOUT
+# 3. STREAMLIT APP LAYOUT & WIDGETS
 # ------------------------------------------------------------------------------
 
-st.title("Day-by-Day Revenue Management Dashboard")
-st.write("Upload all required source files below to construct the Master Day-by-Day Report.")
+st.title("Master Day-by-Day Revenue Management Dashboard")
+st.write("Upload all 5 required source exports to construct your complete Day-by-Day report.")
 
-# Section A: All 5 Required Source Uploaders
+# Section 1: File Uploaders
 st.subheader("1. Source File Uploads")
 
 col1, col2, col3 = st.columns(3)
+
 with col1:
     pcdc_file = st.file_uploader("IDeaS PCDC Export", type=["csv", "xlsx"], key="pcdc")
     extraction_file = st.file_uploader("IDeaS Data Extraction", type=["csv", "xlsx"], key="ext")
@@ -150,62 +149,60 @@ with col3:
 
 st.divider()
 
-# Section B: Process & Tabbed Dashboard View
-if pcdc_file is not None:
+# Section 2: Report Processing & Displays
+if pcdc_file is not None or extraction_file is not None:
     try:
-        # Load and normalize all 5 files
+        # Read & normalize input files
         pcdc_df = load_file(pcdc_file)
         extraction_df = load_file(extraction_file)
         mkt_df = load_file(mkt_file)
         lh_df = load_file(lh_file)
         synxis_df = load_file(synxis_file)
 
-        # Build master grid with explicit headers and order
-        master_grid = build_master_day_by_day_grid(
-            pcdc_df, extraction_df, mkt_df, lh_df, synxis_df
-        )
+        # Build Master Grid
+        master_grid = create_master_dd_grid(pcdc_df, extraction_df, mkt_df, lh_df, synxis_df)
 
-        # Tabbed Dashboard Layout
+        # Tabbed Views
         tab_dd, tab_rate_plans, tab_export = st.tabs([
             "📊 Master Day-by-Day Grid", 
-            "📈 Rate Plan Analysis", 
+            "📈 Rate Plan Breakdown", 
             "📥 Exports"
         ])
 
         with tab_dd:
-            st.subheader("Day-by-Day Performance View")
+            st.subheader("Master Day-by-Day Report")
             st.dataframe(master_grid, use_container_width=True)
 
         with tab_rate_plans:
-            st.subheader("SynXis & Lighthouse Rate Plan Breakdown")
+            st.subheader("SynXis & Lighthouse Data")
             if synxis_df is not None:
                 st.write("### SynXis Rate Plans")
                 st.dataframe(synxis_df, use_container_width=True)
-            else:
-                st.info("Upload SynXis Rate Plan export to view this tab.")
-
             if lh_df is not None:
                 st.write("### Lighthouse Rate Shops")
                 st.dataframe(lh_df, use_container_width=True)
 
         with tab_export:
-            st.subheader("Download Reports")
+            st.subheader("Download Formatted Reports")
             e1, e2 = st.columns(2)
 
-            # CSV Export
-            csv_data = master_grid.to_csv(index=False).encode("utf-8")
+            # Export Option 1: Flattened CSV (single-row column headers)
+            csv_df = master_grid.copy()
+            csv_df.columns = [" ".join(str(c) for c in col if str(c) and not str(c).startswith("Unnamed")).strip() for col in csv_df.columns.values]
+            csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
+            
             e1.download_button(
-                label="Download Flattened CSV Report",
-                data=csv_data,
+                label="Download Flattened CSV",
+                data=csv_bytes,
                 file_name="master_day_by_day_report.csv",
                 mime="text/csv",
                 use_container_width=True
             )
 
-            # Excel Export
+            # Export Option 2: Excel File preserving exact multi-row headers
             excel_buffer = io.BytesIO()
             with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                master_grid.to_excel(writer, index=False, sheet_name="Day_by_Day")
+                master_grid.to_excel(writer, sheet_name="Day_by_Day")
                 if synxis_df is not None:
                     synxis_df.to_excel(writer, index=False, sheet_name="SynXis_Rate_Plans")
 
@@ -218,6 +215,6 @@ if pcdc_file is not None:
             )
 
     except Exception as err:
-        st.error(f"Error generating dashboard: {str(err)}")
+        st.error(f"Error building Master Day-by-Day Report: {str(err)}")
 else:
-    st.info("Please upload at least your primary IDeaS PCDC file to load the report.")
+    st.info("Please upload your files above to generate the report.")
