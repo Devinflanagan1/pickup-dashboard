@@ -1,174 +1,179 @@
+"""
+The Compton — Daily Pick-Up Report Builder
+===========================================
+Upload your four exports and this app rebuilds your pick-up report automatically,
+so you never have to copy/paste again.
+
+Files it expects (any order — it auto-detects each one):
+  1. PCDC.xlsx .................. Change & Differential Control Report (Business Type)
+  2. Data Extract.xlsx ......... Data Extraction Report (Property)
+  3. Market Seg.xlsx ........... Data Extraction Report (Market Segment)
+  4. Rate Shop .xlsx ........... Brand.com BAR / competitor shop (21c, Motto, AC, DoubleTree)
+
+Run it with:   streamlit run app.py
+"""
+
 import io
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(
-    page_title="Master Day-by-Day Revenue Management Dashboard",
-    layout="wide"
-)
+st.set_page_config(page_title="Compton Daily Pick-Up Report", layout="wide")
 
-# ------------------------------------------------------------------------------
-# 1. EXACT TARGET HEADERS
-# ------------------------------------------------------------------------------
-DESIRED_DD_HEADERS = [
-    "DOW",
-    "Date",
-    "Days Left",
-    "Events",
-    "Rooms Left to Sell",
-    "BAR",
-    "Comp Set Avg",
-    "Last Room Value",
-    "21c Museum Hotel Bentonville - MGallery",
-    "Motto By Hilton Bentonville Downtown",
-    "AC Hotel by Marriott Bentonville",
-    "DoubleTree Suites by Hilton Bentonville",
-    "Current",
-    "OOO",
-    "Ovrbk",
-    "Rooms Sold Total Hotel Current",
-    "Rooms Sold Total Hotel Change",
-    "Rooms Sold Total Transient Current",
-    "Rooms Sold Total Transient Change",
-    "Rooms Sold Total Group Current",
-    "Rooms Sold Total Group Change",
-    "Blocked",
-    "P/U",
-    "Rooms OTB STLY Total OTB STLY",
-    "Rooms OTB STLY Variance (TY - STLY)",
-    "Rooms OTB STLY Transient OTB STLY",
-    "Rooms OTB STLY Variance (TY - STLY)",
-    "Rooms OTB STLY Group OTB STLY",
-    "Rooms OTB STLY Variance (TY - STLY)",
-    "Remaining Demand - Total Hotel",
-    "Occupancy Forecast Total Hotel",
-    "Occupancy Forecast Total Transient",
-    "Occupancy Forecast Total Group",
-    "Occupancy Forecast % Total Hotel",
-    "Occupancy Forecast % Total Transient",
-    "Occupancy Forecast % Total Group",
-    "Booked ADR(USD) Total Hotel",
-    "Booked ADR(USD) Total Transient",
-    "Booked ADR(USD) Total Group",
-    "Estimated ADR Total Hotel",
-    "Estimated ADR Total Transient",
-    "Estimated ADR Total Group"
-]
+# ----------------------------------------------------------------------------- #
+#  Helpers
+# ----------------------------------------------------------------------------- #
+def _num(x):
+    """Convert to float; anything non-numeric ('Sold out', 'LOS3', blanks) -> NaN."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return np.nan
 
-def normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
-    for col in df.columns:
-        if "date" in str(col).lower():
-            try:
-                df[col] = pd.to_datetime(df[col]).dt.date
-            except Exception:
-                pass
+
+def _read_all_sheets(uploaded_file):
+    """Return {sheet_name: raw DataFrame (header=None)} for an uploaded workbook."""
+    xls = pd.ExcelFile(uploaded_file, engine="openpyxl")
+    return {s: xls.parse(s, header=None) for s in xls.sheet_names}
+
+
+def detect_and_load(uploaded_files):
+    """
+    Look at every uploaded workbook and figure out which one is which,
+    based on its sheet names / header text. Returns a dict of parsed frames.
+    """
+    found = {"pcdc": None, "data": None, "mseg": None, "shop": None,
+             "shop_chg_1": None, "shop_chg_3": None, "shop_chg_7": None}
+
+    for f in uploaded_files:
+        try:
+            sheets = _read_all_sheets(f)
+        except Exception as e:
+            st.warning(f"Could not open **{f.name}** ({e}).")
+            continue
+        names = [s.lower() for s in sheets.keys()]
+
+        # ---- Rate shop: has a 'Rates' sheet ------------------------------- #
+        if any("rate" in n for n in names) and any("overview" in n for n in names):
+            raw = sheets[[s for s in sheets if s.lower() == "rates"][0]]
+            found["shop"] = _parse_rateshop(raw)
+            # also grab the vs-comparison tabs, if present
+            for tab, key in [("vs. yesterday", "shop_chg_1"),
+                             ("vs. 3 days ago", "shop_chg_3"),
+                             ("vs. 7 days ago", "shop_chg_7")]:
+                match = [s for s in sheets if s.lower() == tab]
+                if match:
+                    found[key] = _parse_shop_change(sheets[match[0]])
+
+        # ---- PCDC: sheet name contains 'ChangeReport' --------------------- #
+        elif any("changereport" in n for n in names):
+            raw = sheets[[s for s in sheets if "changereport" in s.lower()][0]]
+            found["pcdc"] = _parse_pcdc(raw)
+
+        # ---- Market Segment: has a 'Market Segment' sheet ----------------- #
+        elif any("market segment" in n for n in names):
+            raw = sheets[[s for s in sheets if s.lower() == "market segment"][0]]
+            found["mseg"] = _parse_mseg(raw)
+
+        # ---- Data Extract: has a 'Property' sheet ------------------------- #
+        elif any(n == "property" for n in names):
+            raw = sheets[[s for s in sheets if s.lower() == "property"][0]]
+            found["data"] = _parse_data(raw)
+
+        else:
+            st.warning(f"Didn't recognise **{f.name}** — skipping. "
+                       f"(sheets: {', '.join(sheets.keys())})")
+    return found
+
+
+# ----------------------------------------------------------------------------- #
+#  Individual file parsers (all key on Occupancy Date)
+# ----------------------------------------------------------------------------- #
+def _parse_data(raw):
+    """Data Extract › Property sheet. Header in row 0."""
+    df = raw.copy()
+    df.columns = df.iloc[0]
+    df = df.iloc[1:].reset_index(drop=True)
+    df["Occupancy Date"] = pd.to_datetime(df["Occupancy Date"], errors="coerce")
+    df = df.dropna(subset=["Occupancy Date"])
     return df
 
-def process_day_by_day_grid(raw_df: pd.DataFrame, synxis_df: pd.DataFrame = None, reservation_statuses = None, price_change_mode = "Standard") -> pd.DataFrame:
-    df = raw_df.copy()
 
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"]).dt.date
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [" ".join(str(c) for c in col).strip() for col in df.columns.values]
-
-    # Filter SynXis reservation status if applied
-    if synxis_df is not None and reservation_statuses:
-        status_col = next((c for c in synxis_df.columns if "status" in c.lower()), None)
-        if status_col:
-            synxis_df = synxis_df[synxis_df[status_col].isin(reservation_statuses)]
-
-    # Handle competitor price change adjustments if requested
-    if price_change_mode == "Variance Only":
-        for comp_col in ["21c Museum Hotel Bentonville - MGallery", "Motto By Hilton Bentonville Downtown", "AC Hotel by Marriott Bentonville", "DoubleTree Suites by Hilton Bentonville"]:
-            if comp_col in df.columns:
-                df[comp_col] = df[comp_col] - df.get("BAR", 0)
-
-    field_mappings = {
-        "System Total Demand - Total This Year": "Remaining Demand - Total Hotel",
-        "PickUp": "P/U",
-        "Blocked Rooms": "Blocked",
-        "Rooms_Current": "Rooms Sold Total Hotel Current",
-        "Rooms_Change": "Rooms Sold Total Hotel Change",
-    }
-    df = df.rename(columns=field_mappings)
-
-    for col in DESIRED_DD_HEADERS:
-        if col not in df.columns:
-            df[col] = None
-
-    df_final = df[DESIRED_DD_HEADERS]
-    return df_final
+def _parse_pcdc(raw):
+    """
+    PCDC › ChangeReport. Multi-row header (rows 0-2), data from row 3.
+    Columns are taken by position (they're stable in this SynXis export).
+    """
+    df = raw.iloc[3:].copy()
+    df[0] = pd.to_datetime(df[0], errors="coerce")
+    df = df.dropna(subset=[0]).reset_index(drop=True)
+    out = pd.DataFrame({"Occupancy Date": df[0]})
+    out["pc_event"]      = df[2]
+    out["trans_cur"]     = pd.to_numeric(df[3], errors="coerce")
+    out["trans_chg"]     = pd.to_numeric(df[4], errors="coerce")
+    out["grp_cur"]       = pd.to_numeric(df[5], errors="coerce")
+    out["grp_chg"]       = pd.to_numeric(df[6], errors="coerce")
+    out["grp_blocked"]   = pd.to_numeric(df[7], errors="coerce")
+    out["grp_avail"]     = pd.to_numeric(df[8], errors="coerce")   # Remaining in block
+    out["grp_pickup"]    = pd.to_numeric(df[9], errors="coerce")   # Picked up from block
+    out["fcst_trans"]    = pd.to_numeric(df[10], errors="coerce")
+    out["fcst_grp"]      = pd.to_numeric(df[12], errors="coerce")
+    out["rev_trans"]     = pd.to_numeric(df[14], errors="coerce")
+    out["rev_grp"]       = pd.to_numeric(df[16], errors="coerce")
+    out["adr_trans"]     = pd.to_numeric(df[22], errors="coerce")
+    out["adr_grp"]       = pd.to_numeric(df[24], errors="coerce")
+    return out
 
 
-# ------------------------------------------------------------------------------
-# 2. SIDEBAR LAYOUT (FILE UPLOADERS & FILTERS)
-# ------------------------------------------------------------------------------
-with st.sidebar:
-    st.header("Source File Uploads")
-    uploaded_file = st.file_uploader("Upload Master Data File", type=["csv", "xlsx"], key="master_upload")
-    synxis_file = st.file_uploader("SynXis Rate Plan Export (Optional)", type=["csv", "xlsx"], key="synxis_upload")
-    lighthouse_file = st.file_uploader("Lighthouse Rate Shop Export (Optional)", type=["csv", "xlsx"], key="lh_upload")
-
-    st.divider()
-    st.header("Report Filters & Toggles")
-    
-    # SynXis Reservation Status Filter
-    reservation_status_filter = st.multiselect(
-        "SynXis Reservation Status Filter",
-        options=["Confirmed", "Cancelled", "Guaranteed", "Tentative"],
-        default=["Confirmed", "Guaranteed"]
-    )
-
-    # Competitor Price Change Toggle/Mode
-    price_change_mode = st.selectbox(
-        "Competitor Price View",
-        options=["Standard", "Variance Only", "Comp Set Average Focus"]
-    )
+def _parse_mseg(raw):
+    """Market Segment sheet. Header row 0. Aggregate Transient vs Group by date."""
+    df = raw.copy()
+    df.columns = df.iloc[0]
+    df = df.iloc[1:].reset_index(drop=True)
+    df["Occupancy Date"] = pd.to_datetime(df["Occupancy Date"], errors="coerce")
+    df = df.dropna(subset=["Occupancy Date"])
+    df["Occupancy On Books This Year"] = pd.to_numeric(
+        df["Occupancy On Books This Year"], errors="coerce").fillna(0)
+    df["is_trans"] = df["Market Segment"].astype(str).str.startswith("Transient")
+    agg = df.groupby("Occupancy Date").apply(
+        lambda g: pd.Series({
+            "ms_trans": g.loc[g["is_trans"], "Occupancy On Books This Year"].sum(),
+            "ms_group": g.loc[~g["is_trans"], "Occupancy On Books This Year"].sum(),
+        })
+    ).reset_index()
+    return agg
 
 
-# ------------------------------------------------------------------------------
-# 3. MAIN APP INTERFACE & EXPORTS
-# ------------------------------------------------------------------------------
-st.title("Day-by-Day Revenue Report Generator")
+def _clean_shop(x):
+    """Keep the shop value as-is for display ('Sold out', 'LOS3', 359),
+    but tidy numbers so 359.0 shows as 359."""
+    if x is None:
+        return None
+    v = _num(x)
+    if not np.isnan(v):                       # it's a number
+        return int(v) if float(v).is_integer() else v
+    s = str(x).strip()
+    return s if s else None                    # keep text like 'Sold out' / 'LOS3'
 
-if uploaded_file is not None:
-    if uploaded_file.name.endswith(".csv"):
-        raw_data = pd.read_csv(uploaded_file)
-    else:
-        raw_data = pd.read_excel(uploaded_file)
 
-    synxis_data = None
-    if synxis_file is not None:
-        synxis_data = pd.read_csv(synxis_file) if synxis_file.name.endswith(".csv") else pd.read_excel(synxis_file)
+def _parse_rateshop(raw):
+    """Rate shop › Rates sheet. Header row 4, data from row 5. Columns by position.
+    Each competitor keeps a display value (text or number) AND a numeric value
+    (used only for the Comp Set Avg)."""
+    df = raw.iloc[5:].copy()
+    df[2] = pd.to_datetime(df[2], errors="coerce")
+    df = df.dropna(subset=[2]).reset_index(drop=True)
+    out = pd.DataFrame({"Occupancy Date": df[2]})
+    out["own_bar"] = df[4].map(_num)
+    for key, col in [("c_21c", 5), ("c_motto", 6), ("c_ac", 7), ("c_dt", 8)]:
+        out[key] = df[col].map(_clean_shop)          # display value (may be text)
+        out[key + "_n"] = df[col].map(_num)          # numeric only (NaN for text)
+    return out
 
-    processed_df = process_day_by_day_grid(raw_data, synxis_data, reservation_status_filter, price_change_mode)
 
-    st.subheader("Day-by-Day Report Preview")
-    st.dataframe(processed_df, use_container_width=True)
-
-    col1, col2 = st.columns(2)
-
-    csv_bytes = processed_df.to_csv(index=False).encode("utf-8")
-    col1.download_button(
-        label="Download Flattened CSV",
-        data=csv_bytes,
-        file_name="day_by_day_report.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        processed_df.to_excel(writer, index=False, sheet_name="Day_by_Day")
-    
-    col2.download_button(
-        label="Download Excel (.xlsx)",
-        data=excel_buffer.getvalue(),
-        file_name="day_by_day_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-else:
-    st.info("Please upload your files via the sidebar to get started.")
+def _parse_shop_change(raw):
+    """
+    One of the 'vs. Yesterday / 3 days ago / 7 days ago' tabs.
+    Header row 4, data from row 5. Each competitor's CHANGE sits in the
+    column immediately to the right of its rate:
+        21c rate=7 chg=8 | Motto rate=9 chg=10 | AC rate=11 chg=12 | DT r
