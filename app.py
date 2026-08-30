@@ -19,6 +19,11 @@ def parse_lighthouse_rate_shop(lh_file):
     if lh_file is None:
         return {}
 
+    try:
+        lh_file.seek(0)
+    except Exception:
+        pass
+
     excel_file = pd.ExcelFile(lh_file)
     sheet_names = excel_file.sheet_names
     tabs_data = {}
@@ -57,6 +62,11 @@ def parse_lighthouse_rate_shop(lh_file):
         if sheet_name is None:
             continue
 
+        try:
+            lh_file.seek(0)
+        except Exception:
+            pass
+
         df_temp = pd.read_excel(lh_file, sheet_name=sheet_name)
         header_row_idx = 0
         for i, row in df_temp.head(10).iterrows():
@@ -64,6 +74,11 @@ def parse_lighthouse_rate_shop(lh_file):
             if "Day Date" in row_str or "Date" in row_str:
                 header_row_idx = i
                 break
+
+        try:
+            lh_file.seek(0)
+        except Exception:
+            pass
 
         df_clean = pd.read_excel(
             lh_file, sheet_name=sheet_name, header=header_row_idx
@@ -110,16 +125,118 @@ def parse_lighthouse_rate_shop(lh_file):
 
 
 # =============================================================================
-# 2. SYNXIS RATE PLAN PARSER
+# 2. IDEAS PCDC REPORT PARSER
+# =============================================================================
+def parse_ideas_pcdc(pcdc_file):
+    if pcdc_file is None:
+        return pd.DataFrame()
+
+    try:
+        pcdc_file.seek(0)
+    except Exception:
+        pass
+
+    if pcdc_file.name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(pcdc_file)
+    else:
+        try:
+            df = pd.read_csv(pcdc_file)
+        except Exception:
+            pcdc_file.seek(0)
+            df = pd.read_csv(pcdc_file, encoding="latin1")
+
+    df.columns = df.columns.astype(str).str.strip()
+    date_col = next((c for c in df.columns if "Date" in c), None)
+
+    if date_col:
+        df["Occupancy Date"] = pd.to_datetime(df[date_col], errors="coerce")
+        return df.dropna(subset=["Occupancy Date"])
+
+    return pd.DataFrame()
+
+
+# =============================================================================
+# 3. IDEAS DATA EXTRACTION PARSER
+# =============================================================================
+def parse_ideas_data_extraction(extract_file):
+    if extract_file is None:
+        return pd.DataFrame()
+
+    try:
+        extract_file.seek(0)
+    except Exception:
+        pass
+
+    if extract_file.name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(extract_file)
+    else:
+        try:
+            df = pd.read_csv(extract_file)
+        except Exception:
+            extract_file.seek(0)
+            df = pd.read_csv(extract_file, encoding="latin1")
+
+    df.columns = df.columns.astype(str).str.strip()
+    date_col = next((c for c in df.columns if "Date" in c), None)
+
+    if date_col:
+        df["Occupancy Date"] = pd.to_datetime(df[date_col], errors="coerce")
+        return df.dropna(subset=["Occupancy Date"])
+
+    return pd.DataFrame()
+
+
+# =============================================================================
+# 4. MARKET SEGMENTATION PARSER
+# =============================================================================
+def parse_market_segmentation(market_seg_file):
+    if market_seg_file is None:
+        return pd.DataFrame()
+
+    try:
+        market_seg_file.seek(0)
+    except Exception:
+        pass
+
+    if market_seg_file.name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(market_seg_file)
+    else:
+        try:
+            df = pd.read_csv(market_seg_file)
+        except Exception:
+            market_seg_file.seek(0)
+            df = pd.read_csv(market_seg_file, encoding="latin1")
+
+    df.columns = df.columns.astype(str).str.strip()
+    date_col = next((c for c in df.columns if "Date" in c), None)
+
+    if date_col:
+        df["Occupancy Date"] = pd.to_datetime(df[date_col], errors="coerce")
+        return df.dropna(subset=["Occupancy Date"])
+
+    return pd.DataFrame()
+
+
+# =============================================================================
+# 5. SYNXIS RATE PLAN PARSER
 # =============================================================================
 def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
     if synxis_file is None:
         return None, [], pd.DataFrame()
 
+    try:
+        synxis_file.seek(0)
+    except Exception:
+        pass
+
     if synxis_file.name.endswith((".xlsx", ".xls")):
         df_raw = pd.read_excel(synxis_file)
     else:
-        df_raw = pd.read_csv(synxis_file)
+        try:
+            df_raw = pd.read_csv(synxis_file)
+        except Exception:
+            synxis_file.seek(0)
+            df_raw = pd.read_csv(synxis_file, encoding="latin1")
 
     df_raw.columns = df_raw.columns.astype(str).str.strip()
 
@@ -222,29 +339,7 @@ def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
 
 
 # =============================================================================
-# 3. IDEAS PCDC & DATA EXTRACTION PARSER
-# =============================================================================
-def parse_ideas_pcdc(pcdc_file):
-    if pcdc_file is None:
-        return pd.DataFrame()
-
-    if pcdc_file.name.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(pcdc_file)
-    else:
-        df = pd.read_csv(pcdc_file)
-
-    df.columns = df.columns.astype(str).str.strip()
-    date_col = next((c for c in df.columns if "Date" in c), None)
-
-    if date_col:
-        df["Occupancy Date"] = pd.to_datetime(df[date_col], errors="coerce")
-        return df.dropna(subset=["Occupancy Date"])
-
-    return pd.DataFrame()
-
-
-# =============================================================================
-# 4. BASE 2026 GRID GENERATOR
+# 6. BASE 2026 GRID GENERATOR
 # =============================================================================
 def build_2026_base_grid():
     dates = pd.date_range(start="2026-01-01", end="2026-12-31", freq="D")
@@ -252,7 +347,6 @@ def build_2026_base_grid():
     base_df["DOW"] = base_df["Occupancy Date"].dt.strftime("%a")
     base_df["Date"] = base_df["Occupancy Date"].dt.strftime("%Y-%m-%d")
 
-    # Dynamic anchor to current date or standard start date
     today = pd.Timestamp.now().normalize()
     base_df["Days Left"] = (base_df["Occupancy Date"] - today).dt.days
     base_df["Events"] = ""
@@ -261,24 +355,27 @@ def build_2026_base_grid():
 
 
 # =============================================================================
-# 5. STREAMLIT APP ENGINE
+# 7. STREAMLIT APP ENGINE
 # =============================================================================
 def main():
     st.title("🏨 2026 Master Revenue Management System")
 
-    # --- SIDEBAR UPLOADERS & CONTROLS ---
+    # --- SIDEBAR UPLOADERS (ORDERED: LIGHTHOUSE, PCDC, EXTRACTION, SEGMENTATION, SYNXIS) ---
     st.sidebar.header("📁 Data Source Uploads")
     lh_file = st.sidebar.file_uploader(
         "1. Lighthouse Rate Shop (.xlsx)", type=["xlsx"]
     )
-    synxis_file = st.sidebar.file_uploader(
-        "2. SynXis Rate Plan Export (.csv / .xlsx)", type=["csv", "xlsx"]
-    )
     pcdc_file = st.sidebar.file_uploader(
-        "3. IDeaS PCDC Report (.csv / .xlsx)", type=["csv", "xlsx"]
+        "2. IDeaS PCDC Report (.csv / .xlsx)", type=["csv", "xlsx"]
     )
     extract_file = st.sidebar.file_uploader(
-        "4. IDeaS Data Extraction (.csv / .xlsx)", type=["csv", "xlsx"]
+        "3. IDeaS Data Extraction (.csv / .xlsx)", type=["csv", "xlsx"]
+    )
+    market_seg_file = st.sidebar.file_uploader(
+        "4. Market Segmentation (.csv / .xlsx)", type=["csv", "xlsx"]
+    )
+    synxis_file = st.sidebar.file_uploader(
+        "5. SynXis Rate Plan Export (.csv / .xlsx)", type=["csv", "xlsx"]
     )
 
     st.sidebar.markdown("---")
@@ -357,6 +454,11 @@ def main():
         base_df["Rate_Plan_Rev"] = 0.0
         base_df["Rate_Plan_ADR"] = 0.0
 
+    # Execute Parsers for PCDC, Data Extraction, Market Segmentation
+    df_pcdc = parse_ideas_pcdc(pcdc_file)
+    df_extract = parse_ideas_data_extraction(extract_file)
+    df_market_seg = parse_market_segmentation(market_seg_file)
+
     # Initialize placeholder metrics
     metric_cols = [
         "Rem_Demand_Total",
@@ -399,17 +501,10 @@ def main():
     base_df["Sold_Total_Current"] = base_df["Rate_Plan_Rooms"]
     base_df["Booked_ADR_Total"] = base_df["Rate_Plan_ADR"]
 
-    # Optional IDeaS Integration Hook
-    df_pcdc = parse_ideas_pcdc(pcdc_file)
-    if not df_pcdc.empty:
-        # Merge logic for PCDC data into base_df can be expanded here
-        pass
-
     # =========================================================================
     # TAB 1: MAIN DASHBOARD GRID
     # =========================================================================
     with tab_dashboard:
-        # Corrected MultiIndex Columns Structure with Unique Tuples
         columns_tuple = [
             ("", "", "DOW"),
             ("", "", "Date"),
@@ -574,7 +669,6 @@ def main():
             "Sold_Group_Remaining"
         ]
 
-        # Corrected Mapping for Rooms OTB STLY
         dash_df[("Rooms OTB STLY", "Total Hotel", "OTB STLY")] = base_df[
             "OTB_STLY_Total"
         ]
