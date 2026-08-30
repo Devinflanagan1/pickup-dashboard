@@ -3,11 +3,11 @@ import pandas as pd
 import streamlit as st
 
 # =============================================================================
-# STREAMLIT PAGE CONFIGURATION
+# PAGE CONFIGURATION
 # =============================================================================
 st.set_page_config(
-    page_title="2026 Master Day-by-Day Revenue Grid",
-    page_icon="📊",
+    page_title="2026 Master Revenue Management Dashboard",
+    page_icon="🏨",
     layout="wide",
 )
 
@@ -38,18 +38,18 @@ def parse_lighthouse_rate_shop(lh_file):
     }
 
     comp_map = {
-        "21c Museum Hotel": [
+        "21c Museum Hotel Bentonville - MGallery": [
             "21c Museum Hotel",
-            "21c Museum Hotel Bentonville - MGallery",
+            "21c Museum Hotel Bentonville",
         ],
-        "Motto By Hilton": ["Motto By Hilton", "Motto By Hilton Bentonville"],
-        "AC Hotel by Marriott": [
-            "AC Hotel",
-            "AC Hotel by Marriott Bentonville",
+        "Motto By Hilton Bentonville Downtown": [
+            "Motto By Hilton",
+            "Motto Bentonville",
         ],
-        "DoubleTree Suites": [
+        "AC Hotel by Marriott Bentonville": ["AC Hotel", "AC Hotel Bentonville"],
+        "DoubleTree Suites by Hilton Bentonville": [
             "DoubleTree",
-            "DoubleTree Suites by Hilton Bentonville",
+            "DoubleTree Suites Bentonville",
         ],
     }
 
@@ -105,7 +105,7 @@ def parse_lighthouse_rate_shop(lh_file):
 # =============================================================================
 def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
     if synxis_file is None:
-        return None, []
+        return None, [], pd.DataFrame()
 
     if synxis_file.name.endswith((".xlsx", ".xls")):
         df_raw = pd.read_excel(synxis_file)
@@ -163,12 +163,19 @@ def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
         if pd.isna(avg_rate):
             avg_rate = 0.0
 
+        rate_type = row.get("Rate_Type", "Unknown")
+        rate_code = row.get("Rate_Cate", "Unknown")
+        rez_status = row.get(status_col, "Unknown")
+
         for single_date in stay_dates:
             exploded_rows.append(
                 {
                     "Occupancy Date": single_date,
                     "Room_Qty": room_qty,
                     "Daily_Revenue": avg_rate * room_qty,
+                    "Rate_Type": rate_type,
+                    "Rate_Code": rate_code,
+                    "Rez_Status": rez_status,
                 }
             )
 
@@ -183,6 +190,7 @@ def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
                 ]
             ),
             available_statuses,
+            pd.DataFrame(),
         )
 
     df_exploded = pd.DataFrame(exploded_rows)
@@ -201,248 +209,420 @@ def parse_synxis_rate_plan(synxis_file, selected_statuses=None):
         / df_daily["Rate_Plan_Rooms"].replace(0, 1)
     ).round(2)
 
-    return df_daily, available_statuses
+    return df_daily, available_statuses, df_exploded
 
 
 # =============================================================================
-# 3. IDEAS PCDC PARSER
-# =============================================================================
-def parse_ideas_pcdc(pcdc_file):
-    if pcdc_file is None:
-        return None
-
-    if pcdc_file.name.endswith((".xlsx", ".xls")):
-        df_raw = pd.read_excel(pcdc_file)
-    else:
-        df_raw = pd.read_csv(pcdc_file)
-
-    df_raw.columns = df_raw.columns.str.strip()
-
-    date_col = next((c for c in df_raw.columns if "Date" in c or "Occupancy" in c), None)
-    if not date_col:
-        return None
-
-    df_raw["Occupancy Date"] = pd.to_datetime(df_raw[date_col], errors="coerce")
-    df_raw = df_raw.dropna(subset=["Occupancy Date"])
-
-    rooms_col = next((c for c in df_raw.columns if "Room" in c or "Occ" in c or "Stays" in c), None)
-    rev_col = next((c for c in df_raw.columns if "Rev" in c or "Revenue" in c), None)
-    adr_col = next((c for c in df_raw.columns if "ADR" in c or "Rate" in c), None)
-
-    df_pcdc = pd.DataFrame({"Occupancy Date": df_raw["Occupancy Date"]})
-    df_pcdc["PCDC_Rooms"] = pd.to_numeric(df_raw[rooms_col], errors="coerce").fillna(0) if rooms_col else 0
-    df_pcdc["PCDC_Rev"] = pd.to_numeric(df_raw[rev_col], errors="coerce").fillna(0.0) if rev_col else 0.0
-    
-    if adr_col:
-        df_pcdc["PCDC_ADR"] = pd.to_numeric(df_raw[adr_col], errors="coerce").fillna(0.0)
-    else:
-        df_pcdc["PCDC_ADR"] = (df_pcdc["PCDC_Rev"] / df_pcdc["PCDC_Rooms"].replace(0, 1)).round(2)
-
-    return df_pcdc
-
-
-# =============================================================================
-# 4. IDEAS DATA EXTRACTION PARSER
-# =============================================================================
-def parse_ideas_data_extraction(extract_file):
-    if extract_file is None:
-        return None
-
-    if extract_file.name.endswith((".xlsx", ".xls")):
-        df_raw = pd.read_excel(extract_file)
-    else:
-        df_raw = pd.read_csv(extract_file)
-
-    df_raw.columns = df_raw.columns.str.strip()
-
-    date_col = next((c for c in df_raw.columns if "Date" in c or "Occupancy" in c), None)
-    if not date_col:
-        return None
-
-    df_raw["Occupancy Date"] = pd.to_datetime(df_raw[date_col], errors="coerce")
-    df_raw = df_raw.dropna(subset=["Occupancy Date"])
-
-    rooms_col = next((c for c in df_raw.columns if "Room" in c or "Occ" in c or "Sold" in c), None)
-    rev_col = next((c for c in df_raw.columns if "Rev" in c or "Revenue" in c), None)
-
-    df_ext = pd.DataFrame({"Occupancy Date": df_raw["Occupancy Date"]})
-    df_ext["Extract_Rooms"] = pd.to_numeric(df_raw[rooms_col], errors="coerce").fillna(0) if rooms_col else 0
-    df_ext["Extract_Rev"] = pd.to_numeric(df_raw[rev_col], errors="coerce").fillna(0.0) if rev_col else 0.0
-    df_ext["Extract_ADR"] = (df_ext["Extract_Rev"] / df_ext["Extract_Rooms"].replace(0, 1)).round(2)
-
-    return df_ext
-
-
-# =============================================================================
-# 5. BASE GRID BUILDER (CALENDAR YEAR 2026)
+# 3. BASE 2026 GRID GENERATOR
 # =============================================================================
 def build_2026_base_grid():
     dates = pd.date_range(start="2026-01-01", end="2026-12-31", freq="D")
     base_df = pd.DataFrame({"Occupancy Date": dates})
-    base_df["Day of Week"] = base_df["Occupancy Date"].dt.strftime("%a")
-    base_df["Month"] = base_df["Occupancy Date"].dt.strftime("%b %Y")
+    base_df["DOW"] = base_df["Occupancy Date"].dt.strftime("%a")
+    base_df["Date"] = base_df["Occupancy Date"].dt.strftime("%Y-%m-%d")
+
+    today = pd.to_datetime("2026-01-01")
+    base_df["Days Left"] = (base_df["Occupancy Date"] - today).dt.days
+    base_df["Events"] = ""
+
     return base_df
 
 
 # =============================================================================
-# 6. STREAMLIT MAIN APPLICATION
+# 4. STREAMLIT APP ENGINE
 # =============================================================================
 def main():
-    st.title("🏨 2026 Master Day-by-Day Revenue Grid")
-    st.caption(
-        "Consolidates Lighthouse Rate Shops, SynXis Rate Plans, IDeaS PCDC, and IDeaS Data Extractions."
+    st.title("🏨 2026 Master Revenue Management System")
+
+    # --- SIDEBAR UPLOADERS & CONTROLS ---
+    st.sidebar.header("📁 Data Source Uploads")
+    lh_file = st.sidebar.file_uploader(
+        "1. Lighthouse Rate Shop (.xlsx)", type=["xlsx"]
+    )
+    synxis_file = st.sidebar.file_uploader(
+        "2. SynXis Rate Plan Export (.csv / .xlsx)", type=["csv", "xlsx"]
+    )
+    pcdc_file = st.sidebar.file_uploader(
+        "3. IDeaS PCDC Report (.csv / .xlsx)", type=["csv", "xlsx"]
+    )
+    extract_file = st.sidebar.file_uploader(
+        "4. IDeaS Data Extraction (.csv / .xlsx)", type=["csv", "xlsx"]
     )
 
-    # --- SIDEBAR: FILE UPLOAD CENTER ---
-    st.sidebar.header("📁 File Upload Center")
-    lh_file = st.sidebar.file_uploader("1. Lighthouse Rate Shop (.xlsx)", type=["xlsx"])
-    synxis_file = st.sidebar.file_uploader("2. SynXis Rate Plan Export (.csv / .xlsx)", type=["csv", "xlsx"])
-    pcdc_file = st.sidebar.file_uploader("3. IDeaS PCDC Report (.csv / .xlsx)", type=["csv", "xlsx"])
-    extract_file = st.sidebar.file_uploader("4. IDeaS Data Extraction (.csv / .xlsx)", type=["csv", "xlsx"])
-
-    # --- SIDEBAR: CONTROLS ---
     st.sidebar.markdown("---")
     st.sidebar.header("🕹️ Rate Shop Controls")
     rate_view_option = st.sidebar.radio(
-        "Competitor Rate View Mode:",
+        "Competitor View Mode:",
         options=["Rates", "vs. Yesterday", "vs. 3 Days Ago", "vs. 7 Days Ago"],
         index=0,
     )
 
-    st.sidebar.markdown("---")
-    st.sidebar.header("🛎️ SynXis Status Filter")
+    # --- SETUP TABS ---
+    tab_dashboard, tab_rate_plan = st.tabs(
+        ["📊 Main Day-by-Day Dashboard", "📑 SynXis Rate Plan Analysis"]
+    )
+
+    # Parse SynXis Data
     selected_status_list = []
+    df_synxis_daily = None
+    df_synxis_exploded = pd.DataFrame()
+    available_statuses = []
+
     if synxis_file is not None:
-        _, available_statuses = parse_synxis_rate_plan(synxis_file, selected_statuses=None)
-        default_selected = [s for s in available_statuses if "confirm" in s.lower()]
+        _, available_statuses, _ = parse_synxis_rate_plan(
+            synxis_file, selected_statuses=None
+        )
+
+        st.sidebar.markdown("---")
+        st.sidebar.header("🛎️ SynXis Status Filter")
+        default_selected = [
+            s for s in available_statuses if "confirm" in s.lower()
+        ]
         if not default_selected and available_statuses:
             default_selected = available_statuses
 
         selected_status_list = st.sidebar.multiselect(
-            "Filter SynXis `Rez_Status`:",
+            "Active Reservation Statuses:",
             options=available_statuses,
             default=default_selected,
         )
 
-    # --- BUILD & MERGE GRID ---
+        (
+            df_synxis_daily,
+            _,
+            df_synxis_exploded,
+        ) = parse_synxis_rate_plan(
+            synxis_file, selected_statuses=selected_status_list
+        )
+
+    # Parse Lighthouse Data
+    lh_tabs = parse_lighthouse_rate_shop(lh_file) if lh_file else {}
+    df_lh_selected = lh_tabs.get(rate_view_option, pd.DataFrame())
+
+    # Build Base Grid
     base_df = build_2026_base_grid()
 
-    # 1. Lighthouse Integration
-    lh_tabs = parse_lighthouse_rate_shop(lh_file) if lh_file else {}
-    if rate_view_option in lh_tabs:
-        df_lh_selected = lh_tabs[rate_view_option]
-        base_df = pd.merge(base_df, df_lh_selected, on="Occupancy Date", how="left").fillna(0)
+    if not df_lh_selected.empty:
+        base_df = pd.merge(
+            base_df, df_lh_selected, on="Occupancy Date", how="left"
+        ).fillna(0)
     else:
         for comp in [
-            "21c Museum Hotel",
-            "Motto By Hilton",
-            "AC Hotel by Marriott",
-            "DoubleTree Suites",
+            "21c Museum Hotel Bentonville - MGallery",
+            "Motto By Hilton Bentonville Downtown",
+            "AC Hotel by Marriott Bentonville",
+            "DoubleTree Suites by Hilton Bentonville",
             "Comp Set Avg",
         ]:
             base_df[comp] = 0.0
 
-    # 2. SynXis Integration
-    if synxis_file is not None:
-        df_synxis_daily, _ = parse_synxis_rate_plan(synxis_file, selected_statuses=selected_status_list)
-        base_df = pd.merge(base_df, df_synxis_daily, on="Occupancy Date", how="left").fillna(0)
+    if df_synxis_daily is not None and not df_synxis_daily.empty:
+        base_df = pd.merge(
+            base_df, df_synxis_daily, on="Occupancy Date", how="left"
+        ).fillna(0)
     else:
         base_df["Rate_Plan_Rooms"] = 0
         base_df["Rate_Plan_Rev"] = 0.0
         base_df["Rate_Plan_ADR"] = 0.0
 
-    # 3. IDeaS PCDC Integration
-    if pcdc_file is not None:
-        df_pcdc = parse_ideas_pcdc(pcdc_file)
-        if df_pcdc is not None:
-            base_df = pd.merge(base_df, df_pcdc, on="Occupancy Date", how="left").fillna(0)
-        else:
-            base_df["PCDC_Rooms"], base_df["PCDC_Rev"], base_df["PCDC_ADR"] = 0, 0.0, 0.0
-    else:
-        base_df["PCDC_Rooms"], base_df["PCDC_Rev"], base_df["PCDC_ADR"] = 0, 0.0, 0.0
+    # Initialize placeholder metrics matching header structure
+    metric_cols = [
+        "Rem_Demand_Total",
+        "Rem_Demand_Trans",
+        "Rem_Demand_Group",
+        "Occ_Fcst_Total",
+        "Occ_Fcst_Trans",
+        "Occ_Fcst_Group",
+        "Occ_Fcst_Pct_Total",
+        "Occ_Fcst_Pct_Trans",
+        "Occ_Fcst_Pct_Group",
+        "Booked_ADR_Total",
+        "Booked_ADR_Trans",
+        "Booked_ADR_Group",
+        "Rooms_Left_to_Sell",
+        "BAR_Current",
+        "Estimated_ADR",
+        "OOO",
+        "Ovrbk",
+        "Sold_Total_Current",
+        "Sold_Total_Change",
+        "Sold_Trans_Current",
+        "Sold_Trans_Change",
+        "Sold_Group_Current",
+        "Sold_Group_Change",
+        "Sold_Group_Blocked",
+        "Sold_Group_PU",
+        "Sold_Group_Remaining",
+        "OTB_STLY_Total",
+        "Variance_Total_STLY",
+        "OTB_STLY_Trans",
+        "Variance_Trans_STLY",
+        "OTB_STLY_Group",
+        "Variance_Group_STLY",
+    ]
+    for col in metric_cols:
+        base_df[col] = 0.0
 
-    # 4. IDeaS Data Extraction Integration
-    if extract_file is not None:
-        df_ext = parse_ideas_data_extraction(extract_file)
-        if df_ext is not None:
-            base_df = pd.merge(base_df, df_ext, on="Occupancy Date", how="left").fillna(0)
-        else:
-            base_df["Extract_Rooms"], base_df["Extract_Rev"], base_df["Extract_ADR"] = 0, 0.0, 0.0
-    else:
-        base_df["Extract_Rooms"], base_df["Extract_Rev"], base_df["Extract_ADR"] = 0, 0.0, 0.0
+    # Map SynXis OTB into Sold Total Current
+    base_df["Sold_Total_Current"] = base_df["Rate_Plan_Rooms"]
+    base_df["Booked_ADR_Total"] = base_df["Rate_Plan_ADR"]
 
-    # --- CONSTRUCT MULTIINDEX DATAFRAME ---
-    multi_columns = pd.MultiIndex.from_tuples(
-        [
-            ("Date Info", "Occupancy Date"),
-            ("Date Info", "Day of Week"),
-            ("Date Info", "Month"),
-            ("SynXis Rate Plan OTB", "Rooms"),
-            ("SynXis Rate Plan OTB", "Revenue"),
-            ("SynXis Rate Plan OTB", "ADR"),
-            ("IDeaS PCDC", "Rooms"),
-            ("IDeaS PCDC", "Revenue"),
-            ("IDeaS PCDC", "ADR"),
-            ("IDeaS Data Extract", "Rooms"),
-            ("IDeaS Data Extract", "Revenue"),
-            ("IDeaS Data Extract", "ADR"),
-            ("Pricing & Capacity", "Comp Set Avg"),
-            ("Competitor Shops", "21c Museum Hotel"),
-            ("Competitor Shops", "Motto By Hilton"),
-            ("Competitor Shops", "AC Hotel by Marriott"),
-            ("Competitor Shops", "DoubleTree Suites"),
+    # =========================================================================
+    # TAB 1: MAIN DASHBOARD GRID
+    # =========================================================================
+    with tab_dashboard:
+        # Construct MultiIndex Columns matching image_c84646.png
+        columns_tuple = [
+            ("", "", "DOW"),
+            ("", "", "Date"),
+            ("", "", "Days Left"),
+            ("", "", "Events"),
+            ("Remaining Demand", "Total Hotel", ""),
+            ("Remaining Demand", "Total Transient", ""),
+            ("Remaining Demand", "Total Group", ""),
+            ("Occupancy Forecast", "Total Hotel", ""),
+            ("Occupancy Forecast", "Total Transient", ""),
+            ("Occupancy Forecast", "Total Group", ""),
+            ("Occupancy Forecast %", "Total Hotel", ""),
+            ("Occupancy Forecast %", "Total Transient", ""),
+            ("Occupancy Forecast %", "Total Group", ""),
+            ("Booked ADR(USD)", "Total Hotel", ""),
+            ("Booked ADR(USD)", "Total Transient", ""),
+            ("Booked ADR(USD)", "Total Group", ""),
+            ("Pricing & Capacity", "Rooms Left to Sell", ""),
+            ("Pricing & Capacity", "BAR", "Current"),
+            ("Pricing & Capacity", "Comp Set Avg", ""),
+            ("Pricing & Capacity", "Last Room Value", "Estimated ADR"),
+            (
+                "Competitor Shops",
+                "21c Museum Hotel Bentonville - MGallery",
+                "",
+            ),
+            ("Competitor Shops", "Motto By Hilton Bentonville Downtown", ""),
+            ("Competitor Shops", "AC Hotel by Marriott Bentonville", ""),
+            (
+                "Competitor Shops",
+                "DoubleTree Suites by Hilton Bentonville",
+                "",
+            ),
+            ("Inventory", "OOO", ""),
+            ("Inventory", "Ovrbk", ""),
+            ("Rooms Sold", "Total Hotel", "Current"),
+            ("Rooms Sold", "Total Hotel", "Change"),
+            ("Rooms Sold", "Total Transient", "Current"),
+            ("Rooms Sold", "Total Transient", "Change"),
+            ("Rooms Sold", "Total Group", "Current"),
+            ("Rooms Sold", "Total Group", "Change"),
+            ("Rooms Sold", "Total Group", "Blocked"),
+            ("Rooms Sold", "Total Group", "P/U"),
+            ("Rooms Sold", "Total Group", "Remaining"),
+            ("Rooms OTB STLY", "Total OTB STLY", ""),
+            ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
+            ("Rooms OTB STLY", "Transient OTB STLY", ""),
+            ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
+            ("Rooms OTB STLY", "Group OTB STLY", ""),
+            ("Rooms OTB STLY", "Variance (TY - STLY)", ""),
         ]
-    )
 
-    grid_df = pd.DataFrame(index=base_df.index, columns=multi_columns)
+        multi_index_cols = pd.MultiIndex.from_tuples(columns_tuple)
+        dash_df = pd.DataFrame(index=base_df.index, columns=multi_index_cols)
 
-    grid_df[("Date Info", "Occupancy Date")] = base_df["Occupancy Date"].dt.strftime("%Y-%m-%d")
-    grid_df[("Date Info", "Day of Week")] = base_df["Day of Week"]
-    grid_df[("Date Info", "Month")] = base_df["Month"]
+        # Populate Values
+        dash_df[("", "", "DOW")] = base_df["DOW"]
+        dash_df[("", "", "Date")] = base_df["Date"]
+        dash_df[("", "", "Days Left")] = base_df["Days Left"]
+        dash_df[("", "", "Events")] = base_df["Events"]
 
-    grid_df[("SynXis Rate Plan OTB", "Rooms")] = base_df["Rate_Plan_Rooms"].astype(int)
-    grid_df[("SynXis Rate Plan OTB", "Revenue")] = base_df["Rate_Plan_Rev"].round(2).map("{:,.2f}".format)
-    grid_df[("SynXis Rate Plan OTB", "ADR")] = base_df["Rate_Plan_ADR"].round(2).map("{:,.2f}".format)
+        dash_df[("Remaining Demand", "Total Hotel", "")] = base_df[
+            "Rem_Demand_Total"
+        ]
+        dash_df[("Remaining Demand", "Total Transient", "")] = base_df[
+            "Rem_Demand_Trans"
+        ]
+        dash_df[("Remaining Demand", "Total Group", "")] = base_df[
+            "Rem_Demand_Group"
+        ]
 
-    grid_df[("IDeaS PCDC", "Rooms")] = base_df["PCDC_Rooms"].astype(int)
-    grid_df[("IDeaS PCDC", "Revenue")] = base_df["PCDC_Rev"].round(2).map("{:,.2f}".format)
-    grid_df[("IDeaS PCDC", "ADR")] = base_df["PCDC_ADR"].round(2).map("{:,.2f}".format)
+        dash_df[("Occupancy Forecast", "Total Hotel", "")] = base_df[
+            "Occ_Fcst_Total"
+        ]
+        dash_df[("Occupancy Forecast", "Total Transient", "")] = base_df[
+            "Occ_Fcst_Trans"
+        ]
+        dash_df[("Occupancy Forecast", "Total Group", "")] = base_df[
+            "Occ_Fcst_Group"
+        ]
 
-    grid_df[("IDeaS Data Extract", "Rooms")] = base_df["Extract_Rooms"].astype(int)
-    grid_df[("IDeaS Data Extract", "Revenue")] = base_df["Extract_Rev"].round(2).map("{:,.2f}".format)
-    grid_df[("IDeaS Data Extract", "ADR")] = base_df["Extract_ADR"].round(2).map("{:,.2f}".format)
+        dash_df[("Occupancy Forecast %", "Total Hotel", "")] = base_df[
+            "Occ_Fcst_Pct_Total"
+        ]
+        dash_df[("Occupancy Forecast %", "Total Transient", "")] = base_df[
+            "Occ_Fcst_Pct_Trans"
+        ]
+        dash_df[("Occupancy Forecast %", "Total Group", "")] = base_df[
+            "Occ_Fcst_Pct_Group"
+        ]
 
-    grid_df[("Pricing & Capacity", "Comp Set Avg")] = base_df["Comp Set Avg"].round(2).map("{:,.2f}".format)
-    grid_df[("Competitor Shops", "21c Museum Hotel")] = base_df["21c Museum Hotel"].round(2).map("{:,.2f}".format)
-    grid_df[("Competitor Shops", "Motto By Hilton")] = base_df["Motto By Hilton"].round(2).map("{:,.2f}".format)
-    grid_df[("Competitor Shops", "AC Hotel by Marriott")] = base_df["AC Hotel by Marriott"].round(2).map("{:,.2f}".format)
-    grid_df[("Competitor Shops", "DoubleTree Suites")] = base_df["DoubleTree Suites"].round(2).map("{:,.2f}".format)
+        dash_df[("Booked ADR(USD)", "Total Hotel", "")] = base_df[
+            "Booked_ADR_Total"
+        ]
+        dash_df[("Booked ADR(USD)", "Total Transient", "")] = base_df[
+            "Booked_ADR_Trans"
+        ]
+        dash_df[("Booked ADR(USD)", "Total Group", "")] = base_df[
+            "Booked_ADR_Group"
+        ]
 
-    # --- SUMMARY METRICS BAR ---
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("SynXis Rooms OTB", f"{base_df['Rate_Plan_Rooms'].sum():,}")
-    col2.metric("SynXis Revenue OTB", f"${base_df['Rate_Plan_Rev'].sum():,.2f}")
-    col3.metric("IDeaS PCDC Revenue", f"${base_df['PCDC_Rev'].sum():,.2f}")
-    col4.metric("IDeaS Extract Revenue", f"${base_df['Extract_Rev'].sum():,.2f}")
+        dash_df[("Pricing & Capacity", "Rooms Left to Sell", "")] = base_df[
+            "Rooms_Left_to_Sell"
+        ]
+        dash_df[("Pricing & Capacity", "BAR", "Current")] = base_df[
+            "BAR_Current"
+        ]
+        dash_df[("Pricing & Capacity", "Comp Set Avg", "")] = base_df[
+            "Comp Set Avg"
+        ]
+        dash_df[
+            ("Pricing & Capacity", "Last Room Value", "Estimated ADR")
+        ] = base_df["Estimated_ADR"]
 
-    st.markdown("---")
+        dash_df[
+            (
+                "Competitor Shops",
+                "21c Museum Hotel Bentonville - MGallery",
+                "",
+            )
+        ] = base_df["21c Museum Hotel Bentonville - MGallery"]
+        dash_df[
+            ("Competitor Shops", "Motto By Hilton Bentonville Downtown", "")
+        ] = base_df["Motto By Hilton Bentonville Downtown"]
+        dash_df[
+            ("Competitor Shops", "AC Hotel by Marriott Bentonville", "")
+        ] = base_df["AC Hotel by Marriott Bentonville"]
+        dash_df[
+            (
+                "Competitor Shops",
+                "DoubleTree Suites by Hilton Bentonville",
+                "",
+            )
+        ] = base_df["DoubleTree Suites by Hilton Bentonville"]
 
-    # --- DISPLAY MAIN GRID ---
-    st.subheader(f"📅 2026 Master Grid Breakdown (Active View: {rate_view_option})")
-    st.dataframe(grid_df, use_container_width=True, height=650)
+        dash_df[("Inventory", "OOO", "")] = base_df["OOO"]
+        dash_df[("Inventory", "Ovrbk", "")] = base_df["Ovrbk"]
 
-    # --- EXPORT EXCEL CAPABILITY ---
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        grid_df.to_excel(writer, sheet_name="2026_Master_DD_Grid")
-    buffer.seek(0)
+        dash_df[("Rooms Sold", "Total Hotel", "Current")] = base_df[
+            "Sold_Total_Current"
+        ]
+        dash_df[("Rooms Sold", "Total Hotel", "Change")] = base_df[
+            "Sold_Total_Change"
+        ]
+        dash_df[("Rooms Sold", "Total Transient", "Current")] = base_df[
+            "Sold_Trans_Current"
+        ]
+        dash_df[("Rooms Sold", "Total Transient", "Change")] = base_df[
+            "Sold_Trans_Change"
+        ]
+        dash_df[("Rooms Sold", "Total Group", "Current")] = base_df[
+            "Sold_Group_Current"
+        ]
+        dash_df[("Rooms Sold", "Total Group", "Change")] = base_df[
+            "Sold_Group_Change"
+        ]
+        dash_df[("Rooms Sold", "Total Group", "Blocked")] = base_df[
+            "Sold_Group_Blocked"
+        ]
+        dash_df[("Rooms Sold", "Total Group", "P/U")] = base_df["Sold_Group_PU"]
+        dash_df[("Rooms Sold", "Total Group", "Remaining")] = base_df[
+            "Sold_Group_Remaining"
+        ]
 
-    st.download_button(
-        label="📥 Download Master DD Grid (.xlsx)",
-        data=buffer,
-        file_name="2026_Master_DD_Grid_Export.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        dash_df[("Rooms OTB STLY", "Total OTB STLY", "")] = base_df[
+            "OTB_STLY_Total"
+        ]
+        dash_df[("Rooms OTB STLY", "Variance (TY - STLY)", "")] = base_df[
+            "Variance_Total_STLY"
+        ]
+        dash_df[("Rooms OTB STLY", "Transient OTB STLY", "")] = base_df[
+            "OTB_STLY_Trans"
+        ]
+        dash_df[("Rooms OTB STLY", "Variance (TY - STLY)", "")] = base_df[
+            "Variance_Trans_STLY"
+        ]
+        dash_df[("Rooms OTB STLY", "Group OTB STLY", "")] = base_df[
+            "OTB_STLY_Group"
+        ]
+        dash_df[("Rooms OTB STLY", "Variance (TY - STLY)", "")] = base_df[
+            "Variance_Group_STLY"
+        ]
+
+        st.subheader("2026 Day-by-Day Master Grid")
+        st.dataframe(dash_df, use_container_width=True, height=650)
+
+    # =========================================================================
+    # TAB 2: SYNXIS RATE PLAN ANALYSIS
+    # =========================================================================
+    with tab_rate_plan:
+        st.subheader("📑 SynXis Rate Plan Production & Segmentation")
+
+        if synxis_file is None:
+            st.info(
+                "Please upload a SynXis Rate Plan file in the sidebar to view detailed rate plan breakdowns."
+            )
+        elif df_synxis_exploded.empty:
+            st.warning(
+                "No records found matching the selected status filter."
+            )
+        else:
+            # Summary Metrics for Rate Plan Tab
+            rp_col1, rp_col2, rp_col3 = st.columns(3)
+            total_rp_rooms = df_synxis_exploded["Room_Qty"].sum()
+            total_rp_rev = df_synxis_exploded["Daily_Revenue"].sum()
+            avg_rp_adr = (
+                total_rp_rev / total_rp_rooms if total_rp_rooms > 0 else 0.0
+            )
+
+            rp_col1.metric("Filtered Total Rooms", f"{total_rp_rooms:,}")
+            rp_col2.metric("Filtered Total Revenue", f"${total_rp_rev:,.2f}")
+            rp_col3.metric("Filtered Overall ADR", f"${avg_rp_adr:,.2f}")
+
+            st.markdown("---")
+
+            # Breakdown by Rate Code / Category
+            st.write("### 📊 Production by Rate Code")
+            rate_code_summary = (
+                df_synxis_exploded.groupby(["Rate_Code", "Rate_Type"])
+                .agg(
+                    Rooms=("Room_Qty", "sum"),
+                    Revenue=("Daily_Revenue", "sum"),
+                )
+                .reset_index()
+            )
+            rate_code_summary["ADR"] = (
+                rate_code_summary["Revenue"]
+                / rate_code_summary["Rooms"].replace(0, 1)
+            ).round(2)
+            rate_code_summary = rate_code_summary.sort_values(
+                by="Revenue", ascending=False
+            )
+
+            st.dataframe(
+                rate_code_summary.style.format(
+                    {"Revenue": "${:,.2f}", "ADR": "${:,.2f}"}
+                ),
+                use_container_width=True,
+            )
+
+            # Daily Stay Night Production Table
+            st.write("### 📅 Daily Production Breakdown")
+            st.dataframe(
+                df_synxis_daily.style.format(
+                    {
+                        "Rate_Plan_Rev": "${:,.2f}",
+                        "Rate_Plan_ADR": "${:,.2f}",
+                    }
+                ),
+                use_container_width=True,
+            )
 
 
 if __name__ == "__main__":
